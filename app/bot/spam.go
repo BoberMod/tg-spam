@@ -88,6 +88,11 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 	if msg.WithForward {
 		spamReq.Meta.HasForward = true
 	}
+	if msg.Entities != nil {
+		for _, entity := range *msg.Entities {
+			spamReq.Meta.Entities[entity.Type]++
+		}
+	}
 	spamReq.Meta.Links = strings.Count(msg.Text, "http://") + strings.Count(msg.Text, "https://")
 	isSpam, checkResults := s.Check(spamReq)
 	crs := []string{}

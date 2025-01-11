@@ -249,3 +249,93 @@ func TestVideosCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestEntitiesCheck(t *testing.T) {
+	tests := []struct {
+		name     string
+		req      spamcheck.Request
+		limits   map[string]int
+		expected spamcheck.Response
+	}{
+		{
+			name: "No entities",
+			req: spamcheck.Request{
+				Msg: "This is a message without entities.",
+				Meta: spamcheck.MetaData{
+					Entities: map[string]int{},
+				},
+			},
+			limits:   map[string]int{"mention": 2, "hashtag": 1},
+			expected: spamcheck.Response{Name: "entities", Spam: false, Details: "within limits"},
+		},
+		{
+			name: "Within limits",
+			req: spamcheck.Request{
+				Msg: "Message with @mention and #tag",
+				Meta: spamcheck.MetaData{
+					Entities: map[string]int{
+						"mention": 1,
+						"hashtag": 1,
+					},
+				},
+			},
+			limits:   map[string]int{"mention": 2, "hashtag": 1},
+			expected: spamcheck.Response{Name: "entities", Spam: false, Details: "within limits"},
+		},
+		{
+			name: "Exceeds mention limit",
+			req: spamcheck.Request{
+				Msg: "Too many @mentions and @users",
+				Meta: spamcheck.MetaData{
+					Entities: map[string]int{
+						"mention": 3,
+					},
+				},
+			},
+			limits: map[string]int{"mention": 2},
+			expected: spamcheck.Response{
+				Name:    "entities",
+				Spam:    true,
+				Details: "exceeded limits for: mention(3/2)",
+			},
+		},
+		{
+			name: "Multiple limits exceeded",
+			req: spamcheck.Request{
+				Msg: "Too many @mentions and #hashtags",
+				Meta: spamcheck.MetaData{
+					Entities: map[string]int{
+						"mention": 3,
+						"hashtag": 2,
+					},
+				},
+			},
+			limits: map[string]int{"mention": 2, "hashtag": 1},
+			expected: spamcheck.Response{
+				Name:    "entities",
+				Spam:    true,
+				Details: "exceeded limits for: mention(3/2), hashtag(2/1)",
+			},
+		},
+		{
+			name: "No limits configured",
+			req: spamcheck.Request{
+				Msg: "Message with @mention",
+				Meta: spamcheck.MetaData{
+					Entities: map[string]int{
+						"mention": 1,
+					},
+				},
+			},
+			limits:   map[string]int{},
+			expected: spamcheck.Response{Name: "entities", Spam: false, Details: "no limits configured"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			check := EntitiesCheck(tt.limits)
+			assert.Equal(t, tt.expected, check(tt.req))
+		})
+	}
+}

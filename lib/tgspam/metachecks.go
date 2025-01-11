@@ -102,3 +102,33 @@ func ForwardedCheck() MetaCheck {
 	}
 
 }
+
+// EntitiesCheck is a function that returns a MetaCheck function.
+// It checks if the message's entities (mentions, urls, hashtags, etc.) exceed configured limits.
+func EntitiesCheck(limits map[string]int) MetaCheck {
+	return func(req spamcheck.Request) spamcheck.Response {
+		if len(limits) == 0 {
+			return spamcheck.Response{Spam: false, Name: "entities", Details: "no limits configured"}
+		}
+
+		counts := req.Meta.Entities
+
+		var exceededTypes []string
+		for entityType, limit := range limits {
+			if count := counts[entityType]; count > limit {
+				exceededTypes = append(exceededTypes,
+					fmt.Sprintf("%s(%d/%d)", entityType, count, limit))
+			}
+		}
+
+		if len(exceededTypes) > 0 {
+			return spamcheck.Response{
+				Name:    "entities",
+				Spam:    true,
+				Details: fmt.Sprintf("exceeded limits for: %s", strings.Join(exceededTypes, ", ")),
+			}
+		}
+
+		return spamcheck.Response{Spam: false, Name: "entities", Details: "within limits"}
+	}
+}

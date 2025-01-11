@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -185,7 +186,7 @@ func TestSpamFilter_OnMessage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			det := &mocks.DetectorMock{
 				CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
-					if tc.wantRequest != (spamcheck.Request{}) {
+					if !reflect.DeepEqual(tc.wantRequest, spamcheck.Request{}) {
 						assert.Equal(t, tc.wantRequest, req)
 					}
 					if tc.message.Text == "good message" {

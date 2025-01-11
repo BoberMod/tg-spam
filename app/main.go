@@ -69,11 +69,12 @@ type options struct {
 	} `group:"cas" namespace:"cas" env-namespace:"CAS"`
 
 	Meta struct {
-		LinksLimit int  `long:"links-limit" env:"LINKS_LIMIT" default:"-1" description:"max links in message, disabled by default"`
-		ImageOnly  bool `long:"image-only" env:"IMAGE_ONLY" description:"enable image only check"`
-		LinksOnly  bool `long:"links-only" env:"LINKS_ONLY" description:"enable links only check"`
-		VideosOnly bool `long:"video-only" env:"VIDEO_ONLY" description:"enable video only check"`
-		Forward    bool `long:"forward" env:"FORWARD" description:"enable forward check"`
+		LinksLimit   int            `long:"links-limit" env:"LINKS_LIMIT" default:"-1" description:"max links in message, disabled by default"`
+		ImageOnly    bool           `long:"image-only" env:"IMAGE_ONLY" description:"enable image only check"`
+		LinksOnly    bool           `long:"links-only" env:"LINKS_ONLY" description:"enable links only check"`
+		VideosOnly   bool           `long:"video-only" env:"VIDEO_ONLY" description:"enable video only check"`
+		Forward      bool           `long:"forward" env:"FORWARD" description:"enable forward check"`
+		EntityLimits map[string]int `long:"entity-limit" env:"ENTITY_LIMIT" description:"entity type limits in format type:limit (e.g. mention:2,url:1)" value-name:"TYPE:LIMIT"`
 	} `group:"meta" namespace:"meta" env-namespace:"META"`
 
 	OpenAI struct {
@@ -507,6 +508,12 @@ func makeDetector(opts options) *tgspam.Detector {
 		log.Printf("[INFO] forward check enabled")
 		metaChecks = append(metaChecks, tgspam.ForwardedCheck())
 	}
+
+	if len(opts.Meta.EntityLimits) > 0 {
+		log.Printf("[INFO] entities check enabled with limits: %v", opts.Meta.EntityLimits)
+		metaChecks = append(metaChecks, tgspam.EntitiesCheck(opts.Meta.EntityLimits))
+	}
+
 	detector.WithMetaChecks(metaChecks...)
 
 	log.Printf("[DEBUG] detector config: %+v", detectorConfig)
