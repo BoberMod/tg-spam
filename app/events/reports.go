@@ -26,6 +26,25 @@ type Reports interface {
 	DeleteReporter(ctx context.Context, reporterID int64, msgID int, chatID int64) error
 }
 
+type chatAwareReports interface {
+	GetReporterCountSinceChat(ctx context.Context, chatID, reporterID int64, since time.Time) (int, error)
+}
+
+func reporterCountSinceChat(ctx context.Context, reports Reports, chatID, reporterID int64, since time.Time) (int, error) {
+	if scoped, ok := reports.(chatAwareReports); ok {
+		count, err := scoped.GetReporterCountSinceChat(ctx, chatID, reporterID, since)
+		if err != nil {
+			return 0, fmt.Errorf("count chat-local reports: %w", err)
+		}
+		return count, nil
+	}
+	count, err := reports.GetReporterCountSince(ctx, reporterID, since)
+	if err != nil {
+		return 0, fmt.Errorf("count reports: %w", err)
+	}
+	return count, nil
+}
+
 // ReportConfig is user spam reporting configuration
 type ReportConfig struct {
 	Storage          Reports       // reports storage for user spam reports
@@ -45,6 +64,7 @@ type userReports struct {
 	superUsers   SuperUsers
 	primChatID   int64
 	adminChatID  int64
+	chatName     string
 	trainingMode bool
 	softBanMode  bool
 	dry          bool
@@ -90,7 +110,7 @@ func (r *userReports) DirectUserReport(ctx context.Context, update tbapi.Update)
 	}
 
 	// validate reporter is approved user
-	if !r.bot.IsApprovedUser(update.Message.From.ID) {
+	if !isApprovedUserInChat(r.bot, r.primChatID, update.Message.From.ID) {
 		log.Printf("[INFO] report rejected: reporter %d (%s) not in approved list",
 			update.Message.From.ID, update.Message.From.UserName)
 		// still delete the /report command to keep chat clean
@@ -186,7 +206,7 @@ func (r *userReports) checkReportRateLimit(ctx context.Context, reporterID int64
 	}
 
 	since := time.Now().Add(-r.RatePeriod)
-	count, err := r.Storage.GetReporterCountSince(ctx, reporterID, since)
+	count, err := reporterCountSinceChat(ctx, r.Storage, r.primChatID, reporterID, since)
 	if err != nil {
 		return false, fmt.Errorf("failed to get reporter count: %w", err)
 	}
@@ -518,8 +538,9 @@ func (r *userReports) sendReportNotification(ctx context.Context, reports []stor
 	}
 
 	// format notification message
-	notificationText := fmt.Sprintf("**User spam reported (%d reports)**\n\n%s\n\n%s\n\n**Reporters:**\n%s",
+	notificationText := fmt.Sprintf("**User spam reported (%d reports)**\n\n_source: %s (%d)_\n\n%s\n\n%s\n\n**Reporters:**\n%s",
 		len(reports),
+		escapeMarkDownV1Text(r.chatName), chatID,
 		r.reportedUserMD(reportedUserName, reportedUserID),
 		msgText,
 		strings.Join(reporterList, "\n"))
@@ -535,9 +556,9 @@ func (r *userReports) sendReportNotification(ctx context.Context, reports []stor
 	// callback format: R+reportedUserID:msgID, R-reportedUserID:msgID, R?reportedUserID:msgID
 	keyboard := tbapi.NewInlineKeyboardMarkup(
 		tbapi.NewInlineKeyboardRow(
-			tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporters", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", formatCallbackData("R+", chatID, reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("❌ Reject", formatCallbackData("R-", chatID, reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporters", formatCallbackData("R?", chatID, reportedUserID, msgID)),
 		),
 	)
 
@@ -615,9 +636,9 @@ func (r *userReports) updateReportNotification(_ context.Context, reports []stor
 	// create inline keyboard with 3 buttons (same as sendReportNotification)
 	keyboard := tbapi.NewInlineKeyboardMarkup(
 		tbapi.NewInlineKeyboardRow(
-			tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporters", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", formatCallbackData("R+", chatID, reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("❌ Reject", formatCallbackData("R-", chatID, reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporters", formatCallbackData("R?", chatID, reportedUserID, msgID)),
 		),
 	)
 
@@ -781,7 +802,7 @@ func (r *userReports) callbackReportBanReporterAsk(ctx context.Context, query *t
 		}
 		button := tbapi.NewInlineKeyboardButtonData(
 			fmt.Sprintf("Ban %s", reporterName),
-			fmt.Sprintf("R!%d:%d", report.ReporterUserID, msgID),
+			formatCallbackData("R!", r.primChatID, report.ReporterUserID, msgID),
 		)
 		keyboard = append(keyboard, []tbapi.InlineKeyboardButton{button})
 	}
@@ -789,7 +810,7 @@ func (r *userReports) callbackReportBanReporterAsk(ctx context.Context, query *t
 	// add cancel button in new row
 	cancelButton := tbapi.NewInlineKeyboardButtonData(
 		"Cancel",
-		fmt.Sprintf("RX%d:%d", reportedUserID, msgID),
+		formatCallbackData("RX", r.primChatID, reportedUserID, msgID),
 	)
 	keyboard = append(keyboard, []tbapi.InlineKeyboardButton{cancelButton})
 
@@ -916,9 +937,9 @@ func (r *userReports) callbackReportBanReporterConfirm(ctx context.Context, quer
 		// restore original buttons
 		keyboard := tbapi.NewInlineKeyboardMarkup(
 			tbapi.NewInlineKeyboardRow(
-				tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
-				tbapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
-				tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporters", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
+				tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", formatCallbackData("R+", chatID, reportedUserID, msgID)),
+				tbapi.NewInlineKeyboardButtonData("❌ Reject", formatCallbackData("R-", chatID, reportedUserID, msgID)),
+				tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporters", formatCallbackData("R?", chatID, reportedUserID, msgID)),
 			),
 		)
 
@@ -946,9 +967,9 @@ func (r *userReports) callbackReportCancel(_ context.Context, query *tbapi.Callb
 	// restore original button layout
 	keyboard := tbapi.NewInlineKeyboardMarkup(
 		tbapi.NewInlineKeyboardRow(
-			tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporters", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", formatCallbackData("R+", r.primChatID, reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("❌ Reject", formatCallbackData("R-", r.primChatID, reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporters", formatCallbackData("R?", r.primChatID, reportedUserID, msgID)),
 		),
 	)
 
@@ -972,6 +993,17 @@ func (r *userReports) HandleReportCallback(ctx context.Context, query *tbapi.Cal
 	chatID := query.Message.Chat.ID
 	if chatID != r.adminChatID {
 		return nil
+	}
+	target, err := parseCallbackTarget(query.Data, r.primChatID)
+	if err != nil {
+		return err
+	}
+	if target.ChatID != r.primChatID {
+		return fmt.Errorf("report callback source chat %d does not match handler chat %d", target.ChatID, r.primChatID)
+	}
+	if !r.superUsers.IsSuper(query.From.UserName, query.From.ID) {
+		return fmt.Errorf("callback user %s (%d) is not an administrator of source chat %d",
+			query.From.UserName, query.From.ID, r.primChatID)
 	}
 
 	callbackData := query.Data

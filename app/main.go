@@ -47,7 +47,7 @@ type options struct {
 
 	Telegram struct {
 		Token        string        `long:"token" env:"TOKEN" description:"telegram bot token"`
-		Group        string        `long:"group" env:"GROUP" description:"group name/id"`
+		Group        []string      `long:"group" env:"GROUP" env-delim:"," description:"group name/id, repeatable"`
 		Timeout      time.Duration `long:"timeout" env:"TIMEOUT" default:"30s" description:"http client timeout for telegram" `
 		IdleDuration time.Duration `long:"idle" env:"IDLE" default:"30s" description:"idle duration"`
 	} `group:"telegram" namespace:"telegram" env-namespace:"TELEGRAM"`
@@ -414,7 +414,7 @@ func execute(ctx context.Context, settings *config.Settings, reloadNormalize fun
 	}
 
 	convertOnly := settings.Convert == "only"
-	if !settings.Server.Enabled && !convertOnly && (settings.Telegram.Token == "" || settings.Telegram.Group == "") {
+	if !settings.Server.Enabled && !convertOnly && (settings.Telegram.Token == "" || len(settings.Telegram.Group) == 0) {
 		return errors.New("telegram token and group are required")
 	}
 
@@ -481,7 +481,7 @@ func execute(ctx context.Context, settings *config.Settings, reloadNormalize fun
 	}
 
 	// activate web server if enabled, server-only mode (no telegram token)
-	if settings.Server.Enabled && (settings.Telegram.Token == "" || settings.Telegram.Group == "") {
+	if settings.Server.Enabled && (settings.Telegram.Token == "" || len(settings.Telegram.Group) == 0) {
 		// server starts in background goroutine without DM users provider
 		if srvErr := activateServer(ctx, settings, spamBot, locator, dataDB, nil, "", reloadNormalize); srvErr != nil {
 			return fmt.Errorf("can't activate web server, %w", srvErr)
@@ -515,7 +515,7 @@ func execute(ctx context.Context, settings *config.Settings, reloadNormalize fun
 	tgListener := events.TelegramListener{
 		TbAPI:               tbAPI,
 		BotUsername:         tbAPI.Self.UserName,
-		Group:               settings.Telegram.Group,
+		Groups:              settings.Telegram.Group,
 		IdleDuration:        settings.Telegram.IdleDuration,
 		SuperUsers:          settings.Admin.SuperUsers,
 		Bot:                 spamBot,
@@ -557,7 +557,7 @@ func execute(ctx context.Context, settings *config.Settings, reloadNormalize fun
 
 	log.Printf("[DEBUG] telegram listener config: {bot: %s, group: %s, idle: %v, super: %v, admin: %s, "+
 		"testing: %v, no-reply: %v, suppress: %v, dry: %v, training: %v}",
-		tgListener.BotUsername, tgListener.Group, tgListener.IdleDuration, tgListener.SuperUsers,
+		tgListener.BotUsername, tgListener.Groups, tgListener.IdleDuration, tgListener.SuperUsers,
 		tgListener.AdminGroup, tgListener.TestingIDs, tgListener.NoSpamReply, tgListener.SuppressJoinMessage,
 		tgListener.Dry, tgListener.TrainingMode)
 

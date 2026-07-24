@@ -26,20 +26,26 @@ import (
 //			CheckFunc: func(request spamcheck.Request) (bool, []spamcheck.Response) {
 //				panic("mock out the Check method")
 //			},
-//			RecordReactionFunc: func(userID int64) spamcheck.Response {
-//				panic("mock out the RecordReaction method")
-//			},
 //			GetLuaPluginNamesFunc: func() []string {
 //				panic("mock out the GetLuaPluginNames method")
 //			},
 //			IsApprovedUserFunc: func(userID string) bool {
 //				panic("mock out the IsApprovedUser method")
 //			},
+//			IsApprovedUserInChatFunc: func(chatID int64, userID string) bool {
+//				panic("mock out the IsApprovedUserInChat method")
+//			},
 //			LoadSamplesFunc: func(exclReader io.Reader, spamReaders []io.Reader, hamReaders []io.Reader) (tgspam.LoadResult, error) {
 //				panic("mock out the LoadSamples method")
 //			},
 //			LoadStopWordsFunc: func(readers ...io.Reader) (tgspam.LoadResult, error) {
 //				panic("mock out the LoadStopWords method")
+//			},
+//			RecordReactionFunc: func(userID int64) spamcheck.Response {
+//				panic("mock out the RecordReaction method")
+//			},
+//			RecordReactionInChatFunc: func(chatID int64, userID int64) spamcheck.Response {
+//				panic("mock out the RecordReactionInChat method")
 //			},
 //			RemoveApprovedUserFunc: func(id string) error {
 //				panic("mock out the RemoveApprovedUser method")
@@ -72,20 +78,26 @@ type DetectorMock struct {
 	// CheckFunc mocks the Check method.
 	CheckFunc func(request spamcheck.Request) (bool, []spamcheck.Response)
 
-	// RecordReactionFunc mocks the RecordReaction method.
-	RecordReactionFunc func(userID int64) spamcheck.Response
-
 	// GetLuaPluginNamesFunc mocks the GetLuaPluginNames method.
 	GetLuaPluginNamesFunc func() []string
 
 	// IsApprovedUserFunc mocks the IsApprovedUser method.
 	IsApprovedUserFunc func(userID string) bool
 
+	// IsApprovedUserInChatFunc mocks the IsApprovedUserInChat method.
+	IsApprovedUserInChatFunc func(chatID int64, userID string) bool
+
 	// LoadSamplesFunc mocks the LoadSamples method.
 	LoadSamplesFunc func(exclReader io.Reader, spamReaders []io.Reader, hamReaders []io.Reader) (tgspam.LoadResult, error)
 
 	// LoadStopWordsFunc mocks the LoadStopWords method.
 	LoadStopWordsFunc func(readers ...io.Reader) (tgspam.LoadResult, error)
+
+	// RecordReactionFunc mocks the RecordReaction method.
+	RecordReactionFunc func(userID int64) spamcheck.Response
+
+	// RecordReactionInChatFunc mocks the RecordReactionInChat method.
+	RecordReactionInChatFunc func(chatID int64, userID int64) spamcheck.Response
 
 	// RemoveApprovedUserFunc mocks the RemoveApprovedUser method.
 	RemoveApprovedUserFunc func(id string) error
@@ -117,16 +129,18 @@ type DetectorMock struct {
 			// Request is the request argument value.
 			Request spamcheck.Request
 		}
-		// RecordReaction holds details about calls to the RecordReaction method.
-		RecordReaction []struct {
-			// UserID is the userID argument value.
-			UserID int64
-		}
 		// GetLuaPluginNames holds details about calls to the GetLuaPluginNames method.
 		GetLuaPluginNames []struct {
 		}
 		// IsApprovedUser holds details about calls to the IsApprovedUser method.
 		IsApprovedUser []struct {
+			// UserID is the userID argument value.
+			UserID string
+		}
+		// IsApprovedUserInChat holds details about calls to the IsApprovedUserInChat method.
+		IsApprovedUserInChat []struct {
+			// ChatID is the chatID argument value.
+			ChatID int64
 			// UserID is the userID argument value.
 			UserID string
 		}
@@ -143,6 +157,18 @@ type DetectorMock struct {
 		LoadStopWords []struct {
 			// Readers is the readers argument value.
 			Readers []io.Reader
+		}
+		// RecordReaction holds details about calls to the RecordReaction method.
+		RecordReaction []struct {
+			// UserID is the userID argument value.
+			UserID int64
+		}
+		// RecordReactionInChat holds details about calls to the RecordReactionInChat method.
+		RecordReactionInChat []struct {
+			// ChatID is the chatID argument value.
+			ChatID int64
+			// UserID is the userID argument value.
+			UserID int64
 		}
 		// RemoveApprovedUser holds details about calls to the RemoveApprovedUser method.
 		RemoveApprovedUser []struct {
@@ -170,19 +196,21 @@ type DetectorMock struct {
 			Msg string
 		}
 	}
-	lockAddApprovedUser    sync.RWMutex
-	lockApprovedUsers      sync.RWMutex
-	lockCheck              sync.RWMutex
-	lockRecordReaction     sync.RWMutex
-	lockGetLuaPluginNames  sync.RWMutex
-	lockIsApprovedUser     sync.RWMutex
-	lockLoadSamples        sync.RWMutex
-	lockLoadStopWords      sync.RWMutex
-	lockRemoveApprovedUser sync.RWMutex
-	lockRemoveHam          sync.RWMutex
-	lockRemoveSpam         sync.RWMutex
-	lockUpdateHam          sync.RWMutex
-	lockUpdateSpam         sync.RWMutex
+	lockAddApprovedUser      sync.RWMutex
+	lockApprovedUsers        sync.RWMutex
+	lockCheck                sync.RWMutex
+	lockGetLuaPluginNames    sync.RWMutex
+	lockIsApprovedUser       sync.RWMutex
+	lockIsApprovedUserInChat sync.RWMutex
+	lockLoadSamples          sync.RWMutex
+	lockLoadStopWords        sync.RWMutex
+	lockRecordReaction       sync.RWMutex
+	lockRecordReactionInChat sync.RWMutex
+	lockRemoveApprovedUser   sync.RWMutex
+	lockRemoveHam            sync.RWMutex
+	lockRemoveSpam           sync.RWMutex
+	lockUpdateHam            sync.RWMutex
+	lockUpdateSpam           sync.RWMutex
 }
 
 // AddApprovedUser calls AddApprovedUserFunc.
@@ -297,45 +325,6 @@ func (mock *DetectorMock) ResetCheckCalls() {
 	mock.lockCheck.Unlock()
 }
 
-// RecordReaction calls RecordReactionFunc.
-func (mock *DetectorMock) RecordReaction(userID int64) spamcheck.Response {
-	if mock.RecordReactionFunc == nil {
-		panic("DetectorMock.RecordReactionFunc: method is nil but Detector.RecordReaction was just called")
-	}
-	callInfo := struct {
-		UserID int64
-	}{
-		UserID: userID,
-	}
-	mock.lockRecordReaction.Lock()
-	mock.calls.RecordReaction = append(mock.calls.RecordReaction, callInfo)
-	mock.lockRecordReaction.Unlock()
-	return mock.RecordReactionFunc(userID)
-}
-
-// RecordReactionCalls gets all the calls that were made to RecordReaction.
-// Check the length with:
-//
-//	len(mockedDetector.RecordReactionCalls())
-func (mock *DetectorMock) RecordReactionCalls() []struct {
-	UserID int64
-} {
-	var calls []struct {
-		UserID int64
-	}
-	mock.lockRecordReaction.RLock()
-	calls = mock.calls.RecordReaction
-	mock.lockRecordReaction.RUnlock()
-	return calls
-}
-
-// ResetRecordReactionCalls reset all the calls that were made to RecordReaction.
-func (mock *DetectorMock) ResetRecordReactionCalls() {
-	mock.lockRecordReaction.Lock()
-	mock.calls.RecordReaction = nil
-	mock.lockRecordReaction.Unlock()
-}
-
 // GetLuaPluginNames calls GetLuaPluginNamesFunc.
 func (mock *DetectorMock) GetLuaPluginNames() []string {
 	if mock.GetLuaPluginNamesFunc == nil {
@@ -407,6 +396,49 @@ func (mock *DetectorMock) ResetIsApprovedUserCalls() {
 	mock.lockIsApprovedUser.Lock()
 	mock.calls.IsApprovedUser = nil
 	mock.lockIsApprovedUser.Unlock()
+}
+
+// IsApprovedUserInChat calls IsApprovedUserInChatFunc.
+func (mock *DetectorMock) IsApprovedUserInChat(chatID int64, userID string) bool {
+	if mock.IsApprovedUserInChatFunc == nil {
+		panic("DetectorMock.IsApprovedUserInChatFunc: method is nil but Detector.IsApprovedUserInChat was just called")
+	}
+	callInfo := struct {
+		ChatID int64
+		UserID string
+	}{
+		ChatID: chatID,
+		UserID: userID,
+	}
+	mock.lockIsApprovedUserInChat.Lock()
+	mock.calls.IsApprovedUserInChat = append(mock.calls.IsApprovedUserInChat, callInfo)
+	mock.lockIsApprovedUserInChat.Unlock()
+	return mock.IsApprovedUserInChatFunc(chatID, userID)
+}
+
+// IsApprovedUserInChatCalls gets all the calls that were made to IsApprovedUserInChat.
+// Check the length with:
+//
+//	len(mockedDetector.IsApprovedUserInChatCalls())
+func (mock *DetectorMock) IsApprovedUserInChatCalls() []struct {
+	ChatID int64
+	UserID string
+} {
+	var calls []struct {
+		ChatID int64
+		UserID string
+	}
+	mock.lockIsApprovedUserInChat.RLock()
+	calls = mock.calls.IsApprovedUserInChat
+	mock.lockIsApprovedUserInChat.RUnlock()
+	return calls
+}
+
+// ResetIsApprovedUserInChatCalls reset all the calls that were made to IsApprovedUserInChat.
+func (mock *DetectorMock) ResetIsApprovedUserInChatCalls() {
+	mock.lockIsApprovedUserInChat.Lock()
+	mock.calls.IsApprovedUserInChat = nil
+	mock.lockIsApprovedUserInChat.Unlock()
 }
 
 // LoadSamples calls LoadSamplesFunc.
@@ -493,6 +525,88 @@ func (mock *DetectorMock) ResetLoadStopWordsCalls() {
 	mock.lockLoadStopWords.Lock()
 	mock.calls.LoadStopWords = nil
 	mock.lockLoadStopWords.Unlock()
+}
+
+// RecordReaction calls RecordReactionFunc.
+func (mock *DetectorMock) RecordReaction(userID int64) spamcheck.Response {
+	if mock.RecordReactionFunc == nil {
+		panic("DetectorMock.RecordReactionFunc: method is nil but Detector.RecordReaction was just called")
+	}
+	callInfo := struct {
+		UserID int64
+	}{
+		UserID: userID,
+	}
+	mock.lockRecordReaction.Lock()
+	mock.calls.RecordReaction = append(mock.calls.RecordReaction, callInfo)
+	mock.lockRecordReaction.Unlock()
+	return mock.RecordReactionFunc(userID)
+}
+
+// RecordReactionCalls gets all the calls that were made to RecordReaction.
+// Check the length with:
+//
+//	len(mockedDetector.RecordReactionCalls())
+func (mock *DetectorMock) RecordReactionCalls() []struct {
+	UserID int64
+} {
+	var calls []struct {
+		UserID int64
+	}
+	mock.lockRecordReaction.RLock()
+	calls = mock.calls.RecordReaction
+	mock.lockRecordReaction.RUnlock()
+	return calls
+}
+
+// ResetRecordReactionCalls reset all the calls that were made to RecordReaction.
+func (mock *DetectorMock) ResetRecordReactionCalls() {
+	mock.lockRecordReaction.Lock()
+	mock.calls.RecordReaction = nil
+	mock.lockRecordReaction.Unlock()
+}
+
+// RecordReactionInChat calls RecordReactionInChatFunc.
+func (mock *DetectorMock) RecordReactionInChat(chatID int64, userID int64) spamcheck.Response {
+	if mock.RecordReactionInChatFunc == nil {
+		panic("DetectorMock.RecordReactionInChatFunc: method is nil but Detector.RecordReactionInChat was just called")
+	}
+	callInfo := struct {
+		ChatID int64
+		UserID int64
+	}{
+		ChatID: chatID,
+		UserID: userID,
+	}
+	mock.lockRecordReactionInChat.Lock()
+	mock.calls.RecordReactionInChat = append(mock.calls.RecordReactionInChat, callInfo)
+	mock.lockRecordReactionInChat.Unlock()
+	return mock.RecordReactionInChatFunc(chatID, userID)
+}
+
+// RecordReactionInChatCalls gets all the calls that were made to RecordReactionInChat.
+// Check the length with:
+//
+//	len(mockedDetector.RecordReactionInChatCalls())
+func (mock *DetectorMock) RecordReactionInChatCalls() []struct {
+	ChatID int64
+	UserID int64
+} {
+	var calls []struct {
+		ChatID int64
+		UserID int64
+	}
+	mock.lockRecordReactionInChat.RLock()
+	calls = mock.calls.RecordReactionInChat
+	mock.lockRecordReactionInChat.RUnlock()
+	return calls
+}
+
+// ResetRecordReactionInChatCalls reset all the calls that were made to RecordReactionInChat.
+func (mock *DetectorMock) ResetRecordReactionInChatCalls() {
+	mock.lockRecordReactionInChat.Lock()
+	mock.calls.RecordReactionInChat = nil
+	mock.lockRecordReactionInChat.Unlock()
 }
 
 // RemoveApprovedUser calls RemoveApprovedUserFunc.
@@ -704,10 +818,6 @@ func (mock *DetectorMock) ResetCalls() {
 	mock.calls.Check = nil
 	mock.lockCheck.Unlock()
 
-	mock.lockRecordReaction.Lock()
-	mock.calls.RecordReaction = nil
-	mock.lockRecordReaction.Unlock()
-
 	mock.lockGetLuaPluginNames.Lock()
 	mock.calls.GetLuaPluginNames = nil
 	mock.lockGetLuaPluginNames.Unlock()
@@ -716,6 +826,10 @@ func (mock *DetectorMock) ResetCalls() {
 	mock.calls.IsApprovedUser = nil
 	mock.lockIsApprovedUser.Unlock()
 
+	mock.lockIsApprovedUserInChat.Lock()
+	mock.calls.IsApprovedUserInChat = nil
+	mock.lockIsApprovedUserInChat.Unlock()
+
 	mock.lockLoadSamples.Lock()
 	mock.calls.LoadSamples = nil
 	mock.lockLoadSamples.Unlock()
@@ -723,6 +837,14 @@ func (mock *DetectorMock) ResetCalls() {
 	mock.lockLoadStopWords.Lock()
 	mock.calls.LoadStopWords = nil
 	mock.lockLoadStopWords.Unlock()
+
+	mock.lockRecordReaction.Lock()
+	mock.calls.RecordReaction = nil
+	mock.lockRecordReaction.Unlock()
+
+	mock.lockRecordReactionInChat.Lock()
+	mock.calls.RecordReactionInChat = nil
+	mock.lockRecordReactionInChat.Unlock()
 
 	mock.lockRemoveApprovedUser.Lock()
 	mock.calls.RemoveApprovedUser = nil

@@ -256,13 +256,14 @@ func TestSettings_PageLoads(t *testing.T) {
 
 func TestSettings_WarnAutoBanPersists(t *testing.T) {
 	const (
-		warnPort       = 18091
-		warnDBPath     = "/tmp/tg-spam-e2e-warn.db"
-		warnDataPath   = "/tmp/tg-spam-e2e-warn-data"
-		warnPassword   = "e2e-warn-password"
-		warnUser       = "tg-spam"
-		warnThreshold  = "5"
-		warnWindowText = "168h0m0s"
+		warnPort        = 18091
+		warnDBPath      = "/tmp/tg-spam-e2e-warn.db"
+		warnDataPath    = "/tmp/tg-spam-e2e-warn-data"
+		warnPassword    = "e2e-warn-password"
+		warnUser        = "tg-spam"
+		warnThreshold   = "5"
+		warnWindowText  = "168h0m0s"
+		protectedGroups = "chat-one,\n-1002"
 	)
 	warnURL := fmt.Sprintf("http://localhost:%d", warnPort)
 
@@ -331,6 +332,7 @@ func TestSettings_WarnAutoBanPersists(t *testing.T) {
 	require.NoError(t, page.Locator("#behavior-tab").Click())
 	waitVisible(t, page.Locator("#warnThreshold"))
 	waitVisible(t, page.Locator("#warnWindow"))
+	waitVisible(t, page.Locator("#protectedGroups"))
 
 	// verify defaults rendered (threshold defaults to 0, window defaults to 720h)
 	defaultThreshold, err := page.Locator("#warnThreshold").InputValue()
@@ -343,6 +345,7 @@ func TestSettings_WarnAutoBanPersists(t *testing.T) {
 	// change values and save
 	require.NoError(t, page.Locator("#warnThreshold").Fill(warnThreshold))
 	require.NoError(t, page.Locator("#warnWindow").Fill(warnWindowText))
+	require.NoError(t, page.Locator("#protectedGroups").Fill(protectedGroups))
 	require.NoError(t, page.Locator("button[type='submit']:has-text('Save Changes')").Click())
 
 	// wait for the save success alert
@@ -363,6 +366,9 @@ func TestSettings_WarnAutoBanPersists(t *testing.T) {
 	got, err = page.Locator("#warnWindow").InputValue()
 	require.NoError(t, err)
 	assert.Equal(t, warnWindowText, got)
+	got, err = page.Locator("#protectedGroups").InputValue()
+	require.NoError(t, err)
+	assert.Equal(t, "chat-one,-1002", got)
 }
 
 func TestSettings_MaxShortMsgCountPersists(t *testing.T) {

@@ -160,6 +160,40 @@ func (s *StorageTestSuite) TestLocator_CountUserMessages_GIDIsolation() {
 	s.Equal(1, count2, "locator2 should count only its own gid messages")
 }
 
+func (s *StorageTestSuite) TestLocator_ChatIsolation() {
+	ctx := context.Background()
+	db, err := engine.NewSqlite(":memory:", "chat-isolation")
+	s.Require().NoError(err)
+	defer db.Close()
+
+	locator, err := NewLocator(ctx, time.Hour, 1000, db)
+	s.Require().NoError(err)
+	for i, chatID := range []int64{100, 200} {
+		s.Require().NoError(locator.AddMessage(ctx, fmt.Sprintf("same-%d", i), chatID, 42, "user", i+1))
+	}
+
+	count, err := locator.CountUserMessagesInChat(ctx, 100, "42")
+	s.Require().NoError(err)
+	s.Equal(1, count)
+	count, err = locator.CountUserMessagesInChat(ctx, 200, "42")
+	s.Require().NoError(err)
+	s.Equal(1, count)
+
+	ids, err := locator.UserMessageIDsInChat(ctx, 100, "42", 10)
+	s.Require().NoError(err)
+	s.Equal([]int{1}, ids)
+	ids, err = locator.UserMessageIDsInChat(ctx, 200, "42", 10)
+	s.Require().NoError(err)
+	s.Equal([]int{2}, ids)
+
+	checks := []spamcheck.Response{{Name: "test", Spam: true}}
+	s.Require().NoError(locator.AddSpamInChat(ctx, 100, 42, checks))
+	_, found := locator.SpamInChat(ctx, 200, 42)
+	s.False(found)
+	_, found = locator.SpamInChat(ctx, 100, 42)
+	s.True(found)
+}
+
 func (s *StorageTestSuite) TestLocator_UserMessageIDs() {
 	ctx := context.Background()
 	for _, dbt := range s.getTestDB() {
@@ -389,7 +423,7 @@ func (s *StorageTestSuite) TestLocator_HashCollisions() {
 				Time:     time.Now(),
 			}
 			msg2 := MsgMeta{
-				ChatID:   200,
+				ChatID:   100,
 				UserID:   2,
 				UserName: "user2",
 				MsgID:    2,
@@ -526,8 +560,8 @@ func (s *StorageTestSuite) TestLocator_Migration() {
 				s.Equal(1, m.MsgID)
 
 				// primary keys upgraded to the exact composite columns in key order
-				s.Equal([]string{"gid", "hash"}, pkColNames("messages"), "messages pk should be (gid, hash)")
-				s.Equal([]string{"gid", "user_id"}, pkColNames("spam"), "spam pk should be (gid, user_id)")
+				s.Equal([]string{"gid", "chat_id", "hash"}, pkColNames("messages"))
+				s.Equal([]string{"gid", "chat_id", "user_id"}, pkColNames("spam"))
 
 				// the migrated tables accept real upserts: a repeated insert must resolve through
 				// ON CONFLICT (gid, hash)/(gid, user_id) rather than error or duplicate
@@ -581,8 +615,8 @@ func (s *StorageTestSuite) TestLocator_Migration() {
 				s.Require().NoError(db.Get(&spamGID, db.Adopt("SELECT gid FROM spam WHERE user_id = ?"), 100))
 				s.Equal("gr1", spamGID)
 
-				s.Equal(2, pkColCount("messages"))
-				s.Equal(2, pkColCount("spam"))
+				s.Equal(3, pkColCount("messages"))
+				s.Equal(3, pkColCount("spam"))
 			})
 
 			s.Run("migration idempotency", func() {
@@ -602,7 +636,7 @@ func (s *StorageTestSuite) TestLocator_Migration() {
 
 				// still exactly one gid column and a composite primary key
 				s.Equal(1, gidColCount("messages"), "should have exactly one gid column")
-				s.Equal(2, pkColCount("messages"))
+				s.Equal(3, pkColCount("messages"))
 			})
 		})
 	}
@@ -663,9 +697,9 @@ func (s *StorageTestSuite) TestLocator_MigratePrimaryKeyPostgres() {
 
 	var msgPKCols, spamPKCols int
 	s.Require().NoError(db.Get(&msgPKCols, pkColsQuery, "messages"))
-	s.Equal(2, msgPKCols, "messages should have composite (gid, hash) primary key")
+	s.Equal(3, msgPKCols, "messages should have composite (gid, chat_id, hash) primary key")
 	s.Require().NoError(db.Get(&spamPKCols, pkColsQuery, "spam"))
-	s.Equal(2, spamPKCols, "spam should have composite (gid, user_id) primary key")
+	s.Equal(3, spamPKCols, "spam should have composite (gid, chat_id, user_id) primary key")
 
 	// verify data survived the constraint swap
 	var hash string

@@ -568,7 +568,7 @@ func (s *Server) updateApprovedUsersHandler(updFn func(ui approved.UserInfo) err
 		}
 
 		if isHtmxRequest {
-			users := s.Detector.ApprovedUsers()
+			users := approvedUsersWithScopes(s.Detector.ApprovedUsers())
 			tmplData := struct {
 				ApprovedUsers      []approved.UserInfo
 				TotalApprovedUsers int
@@ -598,7 +598,20 @@ func (s *Server) removeApprovedUser(req approved.UserInfo) error {
 
 // getApprovedUsersHandler handles GET /users request. It returns list of approved users.
 func (s *Server) getApprovedUsersHandler(w http.ResponseWriter, _ *http.Request) {
-	rest.RenderJSON(w, rest.JSON{"user_ids": s.Detector.ApprovedUsers()})
+	rest.RenderJSON(w, rest.JSON{"user_ids": approvedUsersWithScopes(s.Detector.ApprovedUsers())})
+}
+
+func approvedUsersWithScopes(users []approved.UserInfo) []approved.UserInfo {
+	result := make([]approved.UserInfo, len(users))
+	copy(result, users)
+	for i := range result {
+		if result[i].ChatID == 0 {
+			result[i].Scope = "All chats"
+		} else {
+			result[i].Scope = strconv.FormatInt(result[i].ChatID, 10)
+		}
+	}
+	return result
 }
 
 // getSettingsHandler returns application settings, including the list of available Lua plugins.
@@ -777,7 +790,7 @@ func (s *Server) htmlManageSamplesHandler(w http.ResponseWriter, _ *http.Request
 }
 
 func (s *Server) htmlManageUsersHandler(w http.ResponseWriter, _ *http.Request) {
-	users := s.Detector.ApprovedUsers()
+	users := approvedUsersWithScopes(s.Detector.ApprovedUsers())
 	tmplData := struct {
 		ApprovedUsers      []approved.UserInfo
 		TotalApprovedUsers int

@@ -87,7 +87,7 @@ func TestCrypter_EncryptDecryptSensitiveFields(t *testing.T) {
 	settings := &Settings{
 		Telegram: TelegramSettings{
 			Token: "telegram-token-secret",
-			Group: "public-group-name",
+			Group: ChatGroups{"public-group-name"},
 		},
 		OpenAI: OpenAISettings{
 			Token:  "openai-token-secret",
@@ -115,7 +115,7 @@ func TestCrypter_EncryptDecryptSensitiveFields(t *testing.T) {
 	assert.True(t, IsEncrypted(settings.Server.AuthHash))
 
 	// verify non-sensitive fields are not encrypted
-	assert.Equal(t, "public-group-name", settings.Telegram.Group)
+	assert.Equal(t, ChatGroups{"public-group-name"}, settings.Telegram.Group)
 	assert.Equal(t, "gpt-4", settings.OpenAI.Model)
 	assert.Equal(t, "public-prompt", settings.OpenAI.Prompt)
 	assert.Equal(t, "gemini-1.5-pro", settings.Gemini.Model)
@@ -136,7 +136,7 @@ func TestCrypter_EncryptDecryptSensitiveFields(t *testing.T) {
 	assert.Equal(t, "server-auth-hash-secret", settings.Server.AuthHash)
 
 	// verify non-sensitive fields are unchanged
-	assert.Equal(t, "public-group-name", settings.Telegram.Group)
+	assert.Equal(t, ChatGroups{"public-group-name"}, settings.Telegram.Group)
 	assert.Equal(t, "gpt-4", settings.OpenAI.Model)
 	assert.Equal(t, "public-prompt", settings.OpenAI.Prompt)
 	assert.Equal(t, "gemini-1.5-pro", settings.Gemini.Model)

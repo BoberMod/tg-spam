@@ -31,9 +31,10 @@ func TestSpamFilter_OnMessage(t *testing.T) {
 		{
 			name: "spam detected",
 			message: Message{
-				Text:  "spam message",
-				From:  User{ID: 1, Username: "user1"},
-				Image: &Image{FileID: "123"},
+				Text:   "spam message",
+				From:   User{ID: 1, Username: "user1"},
+				Image:  &Image{FileID: "123"},
+				ChatID: 100,
 			},
 			wantResponse: Response{
 				Text:          `detected: "user1" (1)`,
@@ -47,7 +48,7 @@ func TestSpamFilter_OnMessage(t *testing.T) {
 				Msg:      "spam message",
 				UserID:   "1",
 				UserName: "user1",
-				Meta:     spamcheck.MetaData{Images: 1},
+				Meta:     spamcheck.MetaData{Images: 1, ChatID: 100},
 			},
 		},
 		{

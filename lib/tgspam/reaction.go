@@ -14,7 +14,7 @@ import (
 type reactionDetector struct {
 	threshold int
 	window    time.Duration
-	cache     cache.Cache[int64, reactionHistory]
+	cache     cache.Cache[chatUserKey, reactionHistory]
 	mu        sync.Mutex
 }
 
@@ -32,7 +32,7 @@ func newReactionDetector(threshold int, window time.Duration) *reactionDetector 
 	return &reactionDetector{
 		threshold: threshold,
 		window:    window,
-		cache:     cache.NewCache[int64, reactionHistory]().WithMaxKeys(maxUsers).WithTTL(window * 2),
+		cache:     cache.NewCache[chatUserKey, reactionHistory]().WithMaxKeys(maxUsers).WithTTL(window * 2),
 	}
 }
 
@@ -40,12 +40,17 @@ func newReactionDetector(threshold int, window time.Duration) *reactionDetector 
 // After that it keeps returning spam=true for subsequent reactions in the same active window until the
 // window expires and the counter resets.
 func (d *reactionDetector) check(userID int64) spamcheck.Response {
+	return d.checkInChat(0, userID)
+}
+
+func (d *reactionDetector) checkInChat(chatID, userID int64) spamcheck.Response {
 	now := time.Now()
+	key := chatUserKey{chatID: chatID, userID: fmt.Sprintf("%d", userID)}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	h, _ := d.cache.Get(userID)
+	h, _ := d.cache.Get(key)
 
 	// reset counter when window has expired
 	if !h.firstSeen.IsZero() && now.After(h.firstSeen.Add(d.window)) {
@@ -57,7 +62,7 @@ func (d *reactionDetector) check(userID int64) spamcheck.Response {
 	}
 	h.count++
 
-	d.cache.Set(userID, h, d.window*2)
+	d.cache.Set(key, h, d.window*2)
 
 	if h.count >= d.threshold {
 		return spamcheck.Response{

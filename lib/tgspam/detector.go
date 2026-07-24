@@ -46,6 +46,7 @@ type Detector struct {
 	luaChecks         []plugin.Check // separate field for Lua plugin checks
 	tokenizedSpam     []map[string]int
 	approvedUsers     map[string]approved.UserInfo
+	chatApprovedUsers map[chatUserKey]approved.UserInfo
 	stopWords         []string
 	excludedTokens    map[string]struct{}
 	luaEngine         LuaPluginEngine
@@ -65,6 +66,11 @@ type Detector struct {
 	// d.lock in either mode, never acquire d.lock while holding it. needed because Check
 	// updates the map while holding d.lock as a read lock only.
 	auLock sync.RWMutex
+}
+
+type chatUserKey struct {
+	chatID int64
+	userID string
 }
 
 // LLMConsensusMode controls how eligible LLM checks flip the base decision.
@@ -181,6 +187,11 @@ type MessageCounter interface {
 	UserMessageIDs(ctx context.Context, userID string, limit int) ([]int, error)
 }
 
+type chatMessageCounter interface {
+	CountUserMessagesInChat(ctx context.Context, chatID int64, userID string) (int, error)
+	UserMessageIDsInChat(ctx context.Context, chatID int64, userID string, limit int) ([]int, error)
+}
+
 // HTTPClient is an interface for http client, satisfied by http.Client.
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
@@ -210,6 +221,7 @@ func NewDetector(p Config) *Detector {
 		Config:            p,
 		classifier:        newClassifier(),
 		approvedUsers:     make(map[string]approved.UserInfo),
+		chatApprovedUsers: make(map[chatUserKey]approved.UserInfo),
 		tokenizedSpam:     []map[string]int{},
 		metaChecks:        []MetaCheck{},
 		luaChecks:         []plugin.Check{},
@@ -254,7 +266,8 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	}
 
 	// approved user don't need content analysis checks, but only skip if no spam detected by behavioral checks
-	if req.UserID != "" && d.FirstMessageOnly && !isSpamDetected(cr) && d.approvedCount(req.UserID) >= d.FirstMessagesCount {
+	if req.UserID != "" && d.FirstMessageOnly && !isSpamDetected(cr) &&
+		d.approvedCount(req.Meta.ChatID, req.UserID) >= d.FirstMessagesCount {
 		// include previous check results (e.g., duplicate check) in the response
 		return false, append(cr, spamcheck.Response{Name: "pre-approved", Spam: false, Details: "user already approved"})
 	}
@@ -421,7 +434,12 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 		// count would weaken the short-msg-flood excess calculation. sequential flow never gets
 		// past FirstMessagesCount because the pre-approved branch short-circuits; the +1 sentinel
 		// is reserved for explicit AddApprovedUser and storage-loaded users
-		newCount := d.approvedUsers[req.UserID].Count + 1
+		key := chatUserKey{chatID: req.Meta.ChatID, userID: req.UserID}
+		current := d.chatApprovedUsers[key]
+		if req.Meta.ChatID == 0 {
+			current = d.approvedUsers[req.UserID]
+		}
+		newCount := current.Count + 1
 		if maxCount := max(d.FirstMessagesCount, 1); newCount > maxCount {
 			newCount = maxCount
 		}
@@ -429,9 +447,14 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 			Count:     newCount,
 			UserID:    req.UserID,
 			UserName:  req.UserName,
+			ChatID:    req.Meta.ChatID,
 			Timestamp: time.Now(),
 		}
-		d.approvedUsers[req.UserID] = au // update approved users status in memory
+		if req.Meta.ChatID == 0 {
+			d.approvedUsers[req.UserID] = au
+		} else {
+			d.chatApprovedUsers[key] = au
+		}
 		d.auLock.Unlock()
 		if d.userStorage != nil {
 			// update approved users status in storage
@@ -521,13 +544,18 @@ func (d *Detector) applyLLMConsensus(baseSpam bool, results []detectorLLMResult,
 // added reaction is counted separately. If the reaction detector is disabled, it returns a non-spam response with
 // "disabled" details.
 func (d *Detector) RecordReaction(userID int64) spamcheck.Response {
+	return d.RecordReactionInChat(0, userID)
+}
+
+// RecordReactionInChat records one reaction in a chat-local counter.
+func (d *Detector) RecordReactionInChat(chatID, userID int64) spamcheck.Response {
 	d.lock.RLock()
 	defer d.lock.RUnlock()
 
 	if d.reactionDetector == nil {
 		return spamcheck.Response{Name: "reactions", Spam: false, Details: "disabled"}
 	}
-	return d.reactionDetector.check(userID)
+	return d.reactionDetector.checkInChat(chatID, userID)
 }
 
 // Reset resets spam samples/classifier, excluded tokens, stop words and approved users.
@@ -540,6 +568,7 @@ func (d *Detector) Reset() {
 	d.classifier.reset()
 	d.auLock.Lock()
 	d.approvedUsers = make(map[string]approved.UserInfo)
+	d.chatApprovedUsers = make(map[chatUserKey]approved.UserInfo)
 	d.auLock.Unlock()
 	d.stopWords = []string{}
 
@@ -626,6 +655,7 @@ func (d *Detector) WithUserStorage(storage UserStorage) (count int, err error) {
 	defer d.lock.Unlock()
 	d.auLock.Lock()
 	d.approvedUsers = make(map[string]approved.UserInfo) // reset approved users
+	d.chatApprovedUsers = make(map[chatUserKey]approved.UserInfo)
 	d.auLock.Unlock()
 	d.userStorage = storage
 
@@ -639,7 +669,11 @@ func (d *Detector) WithUserStorage(storage UserStorage) (count int, err error) {
 	d.auLock.Lock()
 	for _, user := range users {
 		user.Count = d.FirstMessagesCount + 1 // +1 to skip first message check if count is 0
-		d.approvedUsers[user.UserID] = user
+		if user.ChatID == 0 {
+			d.approvedUsers[user.UserID] = user
+		} else {
+			d.chatApprovedUsers[chatUserKey{chatID: user.ChatID, userID: user.UserID}] = user
+		}
 	}
 	d.auLock.Unlock()
 	return len(users), nil
@@ -670,6 +704,11 @@ func (d *Detector) ApprovedUsers() (res []approved.UserInfo) {
 	d.auLock.RLock()
 	res = make([]approved.UserInfo, 0, len(d.approvedUsers))
 	for _, info := range d.approvedUsers {
+		info.Scope = "All chats"
+		res = append(res, info)
+	}
+	for _, info := range d.chatApprovedUsers {
+		info.Scope = strconv.FormatInt(info.ChatID, 10)
 		res = append(res, info)
 	}
 	d.auLock.RUnlock()
@@ -680,20 +719,31 @@ func (d *Detector) ApprovedUsers() (res []approved.UserInfo) {
 }
 
 // approvedCount returns the approved-messages count for a given user ID under auLock.
-func (d *Detector) approvedCount(userID string) int {
+func (d *Detector) approvedCount(chatID int64, userID string) int {
 	d.auLock.RLock()
 	defer d.auLock.RUnlock()
-	return d.approvedUsers[userID].Count
+	if global := d.approvedUsers[userID]; chatID == 0 || global.Count >= d.FirstMessagesCount {
+		return global.Count
+	}
+	return d.chatApprovedUsers[chatUserKey{chatID: chatID, userID: userID}].Count
 }
 
 // IsApprovedUser checks if a given user ID is approved.
 // It uses memory cache for approved users and compares the count of messages sent by the user.
 func (d *Detector) IsApprovedUser(userID string) bool {
+	return d.IsApprovedUserInChat(0, userID)
+}
+
+// IsApprovedUserInChat checks global manual approval and chat-local automatic approval.
+func (d *Detector) IsApprovedUserInChat(chatID int64, userID string) bool {
 	d.lock.RLock()
 	defer d.lock.RUnlock()
 
 	d.auLock.RLock()
 	ui, ok := d.approvedUsers[userID]
+	if !ok {
+		ui, ok = d.chatApprovedUsers[chatUserKey{chatID: chatID, userID: userID}]
+	}
 	d.auLock.RUnlock()
 	if !ok {
 		return false
@@ -710,18 +760,20 @@ func (d *Detector) AddApprovedUser(user approved.UserInfo) error {
 		ts = time.Now()
 	}
 	d.auLock.Lock()
-	d.approvedUsers[user.UserID] = approved.UserInfo{
+	stored := approved.UserInfo{
 		UserID:    user.UserID,
 		UserName:  user.UserName,
+		ChatID:    0,
 		Count:     d.FirstMessagesCount + 1, // +1 to skip first message check if count is 0
 		Timestamp: ts,
 	}
+	d.approvedUsers[user.UserID] = stored
 	d.auLock.Unlock()
 
 	if d.userStorage != nil {
 		ctx, cancel := d.ctxWithStoreTimeout()
 		defer cancel()
-		if err := d.userStorage.Write(ctx, user); err != nil {
+		if err := d.userStorage.Write(ctx, stored); err != nil {
 			return fmt.Errorf("failed to write approved user %+v to storage: %w", user, err)
 		}
 	}
@@ -732,7 +784,16 @@ func (d *Detector) AddApprovedUser(user approved.UserInfo) error {
 func (d *Detector) RemoveApprovedUser(id string) error {
 	d.lock.Lock()
 	d.auLock.Lock()
-	delete(d.approvedUsers, id)
+	for key := range d.approvedUsers {
+		if key == id {
+			delete(d.approvedUsers, key)
+		}
+	}
+	for key := range d.chatApprovedUsers {
+		if key.userID == id {
+			delete(d.chatApprovedUsers, key)
+		}
+	}
 	d.auLock.Unlock()
 	d.lock.Unlock()
 
@@ -1131,7 +1192,7 @@ func (d *Detector) isShortMsgFlood(req spamcheck.Request) spamcheck.Response {
 	if len([]rune(req.Msg)) >= d.MinMsgLen {
 		return notSpam("message not short")
 	}
-	approvedCount := d.approvedCount(req.UserID)
+	approvedCount := d.approvedCount(req.Meta.ChatID, req.UserID)
 	// defensive: in app/main.go FirstMessageOnly is forced true whenever FirstMessagesCount > 0,
 	// so approved users short-circuit at the pre-approved branch in Check and never reach this.
 	// the guard matters for library consumers that construct Detector with FirstMessageOnly=false
@@ -1142,7 +1203,7 @@ func (d *Detector) isShortMsgFlood(req spamcheck.Request) spamcheck.Response {
 
 	ctx, cancel := d.ctxWithStoreTimeout()
 	defer cancel()
-	total, err := d.messageCounter.CountUserMessages(ctx, req.UserID)
+	total, err := d.countUserMessages(ctx, req.Meta.ChatID, req.UserID)
 	if err != nil {
 		log.Printf("[WARN] short-msg-flood: count failed for user %s: %v", req.UserID, err)
 		return notSpam("count error")
@@ -1153,7 +1214,7 @@ func (d *Detector) isShortMsgFlood(req spamcheck.Request) spamcheck.Response {
 	}
 
 	var extraIDs []int
-	ids, err := d.messageCounter.UserMessageIDs(ctx, req.UserID, d.MaxShortMsgCount*2)
+	ids, err := d.userMessageIDs(ctx, req.Meta.ChatID, req.UserID, d.MaxShortMsgCount*2)
 	if err != nil {
 		log.Printf("[WARN] short-msg-flood: ids fetch failed for user %s: %v", req.UserID, err)
 	} else {
@@ -1176,6 +1237,36 @@ func (d *Detector) isShortMsgFlood(req spamcheck.Request) spamcheck.Response {
 		Details:        fmt.Sprintf("%d messages without approval (threshold %d)", excess, d.MaxShortMsgCount),
 		ExtraDeleteIDs: extraIDs,
 	}
+}
+
+func (d *Detector) countUserMessages(ctx context.Context, chatID int64, userID string) (int, error) {
+	if scoped, ok := d.messageCounter.(chatMessageCounter); ok {
+		count, err := scoped.CountUserMessagesInChat(ctx, chatID, userID)
+		if err != nil {
+			return 0, fmt.Errorf("count chat-local user messages: %w", err)
+		}
+		return count, nil
+	}
+	count, err := d.messageCounter.CountUserMessages(ctx, userID)
+	if err != nil {
+		return 0, fmt.Errorf("count user messages: %w", err)
+	}
+	return count, nil
+}
+
+func (d *Detector) userMessageIDs(ctx context.Context, chatID int64, userID string, limit int) ([]int, error) {
+	if scoped, ok := d.messageCounter.(chatMessageCounter); ok {
+		ids, err := scoped.UserMessageIDsInChat(ctx, chatID, userID, limit)
+		if err != nil {
+			return nil, fmt.Errorf("get chat-local user message IDs: %w", err)
+		}
+		return ids, nil
+	}
+	ids, err := d.messageCounter.UserMessageIDs(ctx, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get user message IDs: %w", err)
+	}
+	return ids, nil
 }
 
 // isProhibitedLang counts letters that belong to any configured prohibited script and

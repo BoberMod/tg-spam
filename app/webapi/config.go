@@ -251,8 +251,12 @@ func normalizeLuaEnabledPlugins(selected, available []string) []string {
 // updateSettingsFromForm updates settings from form values
 func updateSettingsFromForm(settings *config.Settings, r *http.Request) {
 	// general settings
-	if val := r.FormValue("primaryGroup"); val != "" {
-		settings.Telegram.Group = val
+	if _, ok := r.Form["protectedGroups"]; ok {
+		settings.Telegram.Group = config.ChatGroups(strings.FieldsFunc(
+			r.FormValue("protectedGroups"), func(r rune) bool { return r == ',' || r == '\n' || r == '\r' },
+		)).Normalize()
+	} else if val := r.FormValue("primaryGroup"); val != "" {
+		settings.Telegram.Group = config.ChatGroups{val}.Normalize()
 	}
 	if val := r.FormValue("adminGroup"); val != "" {
 		settings.Admin.AdminGroup = val

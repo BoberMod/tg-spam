@@ -210,7 +210,7 @@ func TestDuplicateDetector_AutomaticCleanup(t *testing.T) {
 	// verify old entries are cleaned, only the new one remains
 	keys := d.cache.Keys()
 	assert.Len(t, keys, 1)
-	assert.Equal(t, int64(999), keys[0])
+	assert.Equal(t, chatUserKey{userID: "999"}, keys[0])
 }
 
 func TestDuplicateDetector_CleanupInterval(t *testing.T) {
@@ -337,7 +337,7 @@ func TestDuplicateDetector_MessageIDsGrowthExceedsMax(t *testing.T) {
 	}
 
 	// check how many message IDs are stored
-	history, found := d.cache.Get(int64(123))
+	history, found := d.cache.Get(chatUserKey{userID: "123"})
 	assert.True(t, found)
 
 	msgHash := d.hash("spam message")
@@ -371,7 +371,7 @@ func TestDuplicateDetector_FirstSeenAfterTrimming(t *testing.T) {
 	}
 
 	// check the history
-	history, found := d.cache.Get(int64(123))
+	history, found := d.cache.Get(chatUserKey{userID: "123"})
 	assert.True(t, found)
 	assert.Len(t, history.entries, 3, "should only keep 3 most recent entries")
 
@@ -427,7 +427,7 @@ func TestDuplicateDetector_InvalidMessageIDs(t *testing.T) {
 func TestDuplicateDetector_LRUEviction(t *testing.T) {
 	d := newDuplicateDetector(2, time.Hour)
 	d.maxUsers = 3 // set small limit for testing
-	d.cache = cache.NewCache[int64, userHistory]().WithMaxKeys(3).WithTTL(time.Hour)
+	d.cache = cache.NewCache[chatUserKey, userHistory]().WithMaxKeys(3).WithTTL(time.Hour)
 
 	// add messages from 5 users (exceeds limit of 3)
 	for i := range 5 {
@@ -439,8 +439,22 @@ func TestDuplicateDetector_LRUEviction(t *testing.T) {
 	assert.LessOrEqual(t, len(keys), 3, "cache should respect max users limit")
 
 	// recent users should be in cache (2, 3, 4)
-	_, found := d.cache.Get(4)
+	_, found := d.cache.Get(chatUserKey{userID: "4"})
 	assert.True(t, found, "most recent user should be in cache")
+}
+
+func TestDuplicateDetector_ChatIsolation(t *testing.T) {
+	d := newDuplicateDetector(2, time.Hour)
+	request := func(chatID int64, msgID int) spamcheck.Request {
+		return spamcheck.Request{
+			Msg: "same message", UserID: "42",
+			Meta: spamcheck.MetaData{ChatID: chatID, MessageID: msgID},
+		}
+	}
+
+	assert.False(t, d.check(request(100, 1)).Spam)
+	assert.False(t, d.check(request(200, 2)).Spam, "another chat must not contribute to the threshold")
+	assert.True(t, d.check(request(100, 3)).Spam)
 }
 
 func TestDuplicateDetector_EditedMessagesShouldNotTriggerSpam(t *testing.T) {

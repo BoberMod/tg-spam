@@ -1104,6 +1104,17 @@ func Test_parseCallbackData(t *testing.T) {
 	}
 }
 
+func Test_parseCallbackTarget(t *testing.T) {
+	target, err := parseCallbackTarget("R+200:42:7", 100)
+	require.NoError(t, err)
+	assert.Equal(t, callbackTarget{ChatID: 200, UserID: 42, MsgID: 7}, target)
+
+	target, err = parseCallbackTarget("R+42:7", 100)
+	require.NoError(t, err)
+	assert.Equal(t, callbackTarget{ChatID: 100, UserID: 42, MsgID: 7}, target,
+		"legacy payloads must route to the first configured chat")
+}
+
 func Test_channelIDFromCallback(t *testing.T) {
 	tests := []struct {
 		name string

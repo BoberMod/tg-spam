@@ -75,3 +75,12 @@ func TestReactionDetector(t *testing.T) {
 		assert.False(t, resp.Spam, "counter should have been reset after window expiry")
 	})
 }
+
+func TestReactionDetector_ChatIsolation(t *testing.T) {
+	d := newReactionDetector(2, time.Hour)
+	require.NotNil(t, d)
+
+	assert.False(t, d.checkInChat(100, 42).Spam)
+	assert.False(t, d.checkInChat(200, 42).Spam, "another chat must not contribute to the threshold")
+	assert.True(t, d.checkInChat(100, 42).Spam)
+}

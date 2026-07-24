@@ -9,6 +9,8 @@ import (
 type UserInfo struct {
 	UserID    string    `json:"user_id"`
 	UserName  string    `json:"user_name"`
+	ChatID    int64     `json:"chat_id"`
+	Scope     string    `json:"scope,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	Count     int       `json:"-"`
 }

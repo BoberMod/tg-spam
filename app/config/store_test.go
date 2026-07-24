@@ -116,7 +116,7 @@ func (s *SettingsTestSuite) TestStore_SaveLoad() {
 			settings := New()
 			settings.InstanceID = "test-store"
 			settings.SimilarityThreshold = 0.8
-			settings.Telegram.Group = "test-group"
+			settings.Telegram.Group = ChatGroups{"test-group"}
 			settings.Telegram.Timeout = 45 * time.Second
 			settings.Server.Enabled = true
 			settings.Message.Spam = "spam message from store test"
@@ -150,7 +150,7 @@ func (s *SettingsTestSuite) TestStore_SaveLoad() {
 			// check loaded settings
 			s.Equal("test-store", loaded.InstanceID)
 			s.InEpsilon(0.8, loaded.SimilarityThreshold, 0.0001)
-			s.Equal("test-group", loaded.Telegram.Group)
+			s.Equal(ChatGroups{"test-group"}, loaded.Telegram.Group)
 			s.Equal(45*time.Second, loaded.Telegram.Timeout)
 			s.True(loaded.Server.Enabled)
 			s.Equal("spam message from store test", loaded.Message.Spam)
@@ -249,7 +249,7 @@ func (s *SettingsTestSuite) TestStore_Update() {
 			// create and save initial settings
 			s1 := New()
 			s1.InstanceID = "initial"
-			s1.Telegram.Group = "initial-group"
+			s1.Telegram.Group = ChatGroups{"initial-group"}
 
 			err = store.Save(s.ctx, s1)
 			s.Require().NoError(err)
@@ -261,7 +261,7 @@ func (s *SettingsTestSuite) TestStore_Update() {
 			// create and save updated settings
 			s2 := New()
 			s2.InstanceID = "updated"
-			s2.Telegram.Group = "updated-group"
+			s2.Telegram.Group = ChatGroups{"updated-group"}
 
 			err = store.Save(s.ctx, s2)
 			s.Require().NoError(err)
@@ -281,7 +281,7 @@ func (s *SettingsTestSuite) TestStore_Update() {
 			s.Require().NoError(err)
 
 			s.Equal("updated", loaded.InstanceID)
-			s.Equal("updated-group", loaded.Telegram.Group)
+			s.Equal(ChatGroups{"updated-group"}, loaded.Telegram.Group)
 		})
 	}
 }
@@ -320,7 +320,7 @@ func (s *SettingsTestSuite) TestStore_ComplexSettings() {
 			settings.SimilarityThreshold = 0.75
 			settings.MinMsgLen = 100
 			settings.MaxEmoji = 5
-			settings.Telegram.Group = "@testgroup"
+			settings.Telegram.Group = ChatGroups{"@testgroup"}
 			settings.Telegram.IdleDuration = 1 * time.Minute
 			settings.Admin.SuperUsers = []string{"user1", "user2"}
 			settings.Admin.TestingIDs = []int64{123, 456}
@@ -342,7 +342,7 @@ func (s *SettingsTestSuite) TestStore_ComplexSettings() {
 			s.InEpsilon(0.75, loaded.SimilarityThreshold, 0.0001)
 			s.Equal(100, loaded.MinMsgLen)
 			s.Equal(5, loaded.MaxEmoji)
-			s.Equal("@testgroup", loaded.Telegram.Group)
+			s.Equal(ChatGroups{"@testgroup"}, loaded.Telegram.Group)
 			s.Equal(1*time.Minute, loaded.Telegram.IdleDuration)
 			s.Equal([]string{"user1", "user2"}, loaded.Admin.SuperUsers)
 			s.Equal([]int64{123, 456}, loaded.Admin.TestingIDs)
@@ -371,7 +371,7 @@ func (s *SettingsTestSuite) TestStore_WithEncryption() {
 			settings.Telegram.Token = "super-secret-telegram-token"
 			settings.OpenAI.Token = "super-secret-openai-token"
 			settings.Server.AuthHash = "super-secret-auth-hash"
-			settings.Telegram.Group = "non-sensitive-group"
+			settings.Telegram.Group = ChatGroups{"non-sensitive-group"}
 
 			// save settings with encryption
 			err = store.Save(s.ctx, settings)
@@ -417,7 +417,7 @@ func (s *SettingsTestSuite) TestStore_WithEncryption() {
 				"OpenAI token should be decrypted when loaded")
 			s.Equal("super-secret-auth-hash", loaded.Server.AuthHash,
 				"Auth hash should be decrypted when loaded")
-			s.Equal("non-sensitive-group", loaded.Telegram.Group,
+			s.Equal(ChatGroups{"non-sensitive-group"}, loaded.Telegram.Group,
 				"Non-sensitive fields should be unchanged")
 
 			// now access without encryption

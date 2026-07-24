@@ -44,6 +44,7 @@
             <tr>
                 <th>ID</th>
                 <th>Name</th>
+                <th>Scope</th>
                 <th>Timestamp</th>
                 <th></th> <!-- Header for the action column -->
             </tr>
@@ -53,6 +54,7 @@
                 <tr>
                     <td>{{.UserID}}</td>
                     <td>{{.UserName}}</td>
+                    <td>{{.Scope}}</td>
                     <td>{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
                     <td class="text-end">
                         <form method="POST" hx-post="/users/delete" hx-target="#users-list" hx-swap="outerHTML" class="d-inline">
@@ -65,7 +67,7 @@
                 </tr>
             {{else}}
                 <tr>
-                    <td colspan="4">No approved users found</td>
+                    <td colspan="5">No approved users found</td>
                 </tr>
             {{end}}
             </tbody>

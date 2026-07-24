@@ -46,7 +46,8 @@ type TelegramListener struct {
 	SpamLogger              SpamLogger    // logger to save spam to files and db
 	Bot                     Bot           // bot to handle messages
 	BotUsername             string        // telegram bot username (without "@" prefix)
-	Group                   string        // can be int64 or public group username (without "@" prefix)
+	Groups                  []string      // protected chats, each can be int64 or a public username
+	Group                   string        // legacy single-chat input used by older embedders and tests
 	AdminGroup              string        // can be int64 or public group username (without "@" prefix)
 	IdleDuration            time.Duration // idle timeout to send "idle" message to bots
 	SuperUsers              SuperUsers    // list of superusers, can ban and report spam, can't be banned
@@ -71,10 +72,15 @@ type TelegramListener struct {
 
 	adminHandler    *admin
 	reportsHandler  *userReports
+	adminHandlers   map[int64]*admin
+	reportsHandlers map[int64]*userReports
 	dmUsers         dmUsers // recent DM senders, stored in memory for admin UI
 	chatID          int64
+	linkedChannelID int64
 	adminChatID     int64
-	linkedChannelID int64 // channel linked to the discussion group, resolved at startup
+	globalSupers    SuperUsers
+	chats           map[int64]managedChat
+	chatOrder       []int64
 
 	msgs struct {
 		once sync.Once
@@ -86,6 +92,13 @@ type TelegramListener struct {
 	extraDeletesMu sync.Mutex
 }
 
+type managedChat struct {
+	ID              int64
+	Name            string
+	LinkedChannelID int64
+	SuperUsers      SuperUsers
+}
+
 // GetDMUsers returns the list of recent DM senders
 func (l *TelegramListener) GetDMUsers() []DMUser {
 	return l.dmUsers.List()
@@ -93,7 +106,12 @@ func (l *TelegramListener) GetDMUsers() []DMUser {
 
 // Do process all events, blocked call
 func (l *TelegramListener) Do(ctx context.Context) error {
-	log.Printf("[INFO] start telegram listener for %q", l.Group)
+	groups := l.Groups
+	explicitGroups := len(groups) > 0
+	if len(groups) == 0 && strings.TrimSpace(l.Group) != "" {
+		groups = []string{l.Group}
+	}
+	log.Printf("[INFO] start telegram listener for %q", groups)
 
 	if l.TrainingMode {
 		log.Printf("[WARN] training mode, no bans")
@@ -103,32 +121,55 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 		log.Printf("[INFO] soft ban mode, no bans but restrictions")
 	}
 
-	// get chat ID for the group we are monitoring
-	var getChatErr error
-	if l.chatID, getChatErr = l.getChatID(l.Group); getChatErr != nil {
-		return fmt.Errorf("failed to get chat ID for group %q: %w", l.Group, getChatErr)
+	if len(groups) == 0 && l.chatID == 0 {
+		return fmt.Errorf("at least one telegram group is required")
 	}
-	log.Printf("[INFO] primary chat ID: %d", l.chatID)
-
-	// resolve the linked channel for this discussion group
-	chatInfo, err := l.TbAPI.GetChat(tbapi.ChatInfoConfig{ChatConfig: tbapi.ChatConfig{ChatID: l.chatID}})
-	if err != nil {
-		log.Printf("[WARN] failed to get chat info for linked channel resolution: %v", err)
-	} else if chatInfo.LinkedChatID != 0 {
-		l.linkedChannelID = chatInfo.LinkedChatID
-		log.Printf("[INFO] linked channel ID: %d", l.linkedChannelID)
+	l.chats = make(map[int64]managedChat, max(len(groups), 1))
+	l.chatOrder = l.chatOrder[:0]
+	configuredSupers := append(SuperUsers(nil), l.SuperUsers...)
+	l.globalSupers = configuredSupers
+	if len(groups) == 0 {
+		l.chats[l.chatID] = managedChat{
+			ID: l.chatID, Name: strconv.FormatInt(l.chatID, 10), LinkedChannelID: l.linkedChannelID,
+			SuperUsers: append(SuperUsers(nil), l.SuperUsers...),
+		}
+		l.chatOrder = append(l.chatOrder, l.chatID)
 	}
-
-	if err := l.updateSupers(); err != nil {
-		log.Printf("[WARN] failed to update superusers: %v", err)
+	for _, configuredGroup := range groups {
+		group := strings.TrimSpace(configuredGroup)
+		if group == "" {
+			continue
+		}
+		chat, err := l.resolveManagedChat(group, explicitGroups, configuredSupers)
+		if err != nil {
+			return err
+		}
+		if _, duplicate := l.chats[chat.ID]; duplicate {
+			continue
+		}
+		l.chats[chat.ID] = chat
+		l.chatOrder = append(l.chatOrder, chat.ID)
+		if l.chatID == 0 {
+			l.chatID = chat.ID
+			l.linkedChannelID = chat.LinkedChannelID
+		}
+		log.Printf("[INFO] protected chat %s (%d), linked channel: %d", chat.Name, chat.ID, chat.LinkedChannelID)
 	}
+	if len(l.chats) == 0 {
+		return fmt.Errorf("at least one telegram group is required")
+	}
+	l.SuperUsers = append(SuperUsers(nil), l.chats[l.chatID].SuperUsers...)
 
 	if l.AdminGroup != "" {
 		// get chat ID for the admin group
+		var getChatErr error
 		if l.adminChatID, getChatErr = l.getChatID(l.AdminGroup); getChatErr != nil {
 			return fmt.Errorf("failed to get chat ID for admin group %q: %w", l.AdminGroup, getChatErr)
 		}
 		log.Printf("[INFO] admin chat ID: %d", l.adminChatID)
+		if _, protected := l.chats[l.adminChatID]; protected && explicitGroups {
+			return fmt.Errorf("admin chat %d cannot also be a protected chat", l.adminChatID)
+		}
 	}
 
 	l.msgs.once.Do(func() {
@@ -138,29 +179,36 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 		}
 	})
 
-	// send startup message if any set
+	// send startup message to every protected chat
 	if l.StartupMsg != "" && !l.TrainingMode && !l.Dry {
-		if err := l.sendBotResponse(bot.Response{Send: true, Text: l.StartupMsg}, l.chatID, NotificationSilent); err != nil {
-			log.Printf("[WARN] failed to send startup message, %v", err)
-		} else {
-			log.Printf("[DEBUG] startup message sent")
+		for _, chatID := range l.chatOrder {
+			if err := l.sendBotResponse(bot.Response{Send: true, Text: l.StartupMsg}, chatID, NotificationSilent); err != nil {
+				log.Printf("[WARN] failed to send startup message to %d, %v", chatID, err)
+			}
 		}
 	}
 
-	l.adminHandler = &admin{
-		tbAPI: l.TbAPI, bot: l.Bot, locator: l.Locator, superUsers: l.SuperUsers,
-		primChatID: l.chatID, adminChatID: l.adminChatID,
-		trainingMode: l.TrainingMode, softBan: l.SoftBanMode, dry: l.Dry, warnMsg: l.WarnMsg,
-		aggressiveCleanup: l.AggressiveCleanup, aggressiveCleanupLimit: l.AggressiveCleanupLimit,
-		warnings: l.Warnings, warnThreshold: l.WarnThreshold, warnWindow: l.WarnWindow,
+	l.adminHandlers = make(map[int64]*admin, len(l.chats))
+	l.reportsHandlers = make(map[int64]*userReports, len(l.chats))
+	for _, chatID := range l.chatOrder {
+		chat := l.chats[chatID]
+		l.adminHandlers[chatID] = &admin{
+			tbAPI: l.TbAPI, bot: l.Bot, locator: l.Locator, superUsers: chat.SuperUsers,
+			primChatID: chatID, adminChatID: l.adminChatID, chatName: chat.Name,
+			trainingMode: l.TrainingMode, softBan: l.SoftBanMode, dry: l.Dry, warnMsg: l.WarnMsg,
+			aggressiveCleanup: l.AggressiveCleanup, aggressiveCleanupLimit: l.AggressiveCleanupLimit,
+			warnings: l.Warnings, warnThreshold: l.WarnThreshold, warnWindow: l.WarnWindow,
+			ambiguousForward: len(l.chats) > 1,
+		}
+		l.reportsHandlers[chatID] = &userReports{
+			ReportConfig: l.ReportConfig,
+			tbAPI:        l.TbAPI, bot: l.Bot, locator: l.Locator, superUsers: chat.SuperUsers,
+			primChatID: chatID, adminChatID: l.adminChatID, chatName: chat.Name,
+			trainingMode: l.TrainingMode, softBanMode: l.SoftBanMode, dry: l.Dry,
+		}
 	}
-
-	l.reportsHandler = &userReports{
-		ReportConfig: l.ReportConfig,
-		tbAPI:        l.TbAPI, bot: l.Bot, locator: l.Locator, superUsers: l.SuperUsers,
-		primChatID: l.chatID, adminChatID: l.adminChatID,
-		trainingMode: l.TrainingMode, softBanMode: l.SoftBanMode, dry: l.Dry,
-	}
+	l.adminHandler = l.adminHandlers[l.chatID]
+	l.reportsHandler = l.reportsHandlers[l.chatID]
 
 	adminForwardStatus := "enabled"
 	if l.DisableAdminSpamForward {
@@ -201,7 +249,8 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 				if l.DisableAdminSpamForward {
 					continue
 				}
-				if err := l.adminHandler.MsgHandler(update); err != nil {
+				handler := l.adminHandlerForMessage(update.Message)
+				if err := handler.MsgHandler(update); err != nil {
 					log.Printf("[WARN] failed to process admin chat message: %v", err)
 					errResp := l.sendBotResponse(bot.Response{Send: true, Text: "error: " + err.Error()}, l.adminChatID, NotificationDefault)
 					if errResp != nil {
@@ -214,10 +263,20 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 			// handle admin chat inline buttons - route based on callback prefix
 			if update.CallbackQuery != nil {
 				callbackData := update.CallbackQuery.Data
+				target, targetErr := parseCallbackTarget(callbackData, l.chatID)
+				if targetErr != nil {
+					log.Printf("[WARN] failed to parse callback target: %v", targetErr)
+					continue
+				}
+				adminHandler, adminFound := l.adminHandlers[target.ChatID]
+				reportsHandler, reportsFound := l.reportsHandlers[target.ChatID]
 
 				// delegate report callbacks (prefixes R+, R-, R?, R!, RX) to reportsHandler
 				if len(callbackData) >= 3 && callbackData[:1] == "R" {
-					if err := l.reportsHandler.HandleReportCallback(ctx, update.CallbackQuery); err != nil {
+					if !reportsFound {
+						continue
+					}
+					if err := reportsHandler.HandleReportCallback(ctx, update.CallbackQuery); err != nil {
 						log.Printf("[WARN] failed to process report callback: %v", err)
 						errResp := l.sendBotResponse(bot.Response{Send: true, Text: "error: " + err.Error()}, l.adminChatID, NotificationDefault)
 						if errResp != nil {
@@ -225,8 +284,11 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 						}
 					}
 				} else {
+					if !adminFound {
+						continue
+					}
 					// all other callbacks (?, +, !, or no prefix) go to admin handler
-					if err := l.adminHandler.InlineCallbackHandler(update.CallbackQuery); err != nil {
+					if err := adminHandler.InlineCallbackHandler(update.CallbackQuery); err != nil {
 						log.Printf("[WARN] failed to process callback: %v", err)
 						errResp := l.sendBotResponse(bot.Response{Send: true, Text: "error: " + err.Error()}, l.adminChatID, NotificationDefault)
 						if errResp != nil {
@@ -259,6 +321,9 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 			}
 
 			if update.Message == nil {
+				continue
+			}
+			if update.Message.Chat.Type != "private" && !l.isChatAllowed(update.Message.Chat.ID) {
 				continue
 			}
 
@@ -304,7 +369,7 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 			}
 
 			// handle spam reports from superusers and linked channel
-			fromSuper := l.SuperUsers.IsSuper(update.Message.From.UserName, update.Message.From.ID) ||
+			fromSuper := l.isSuperForChat(update.Message.Chat.ID, update.Message.From.UserName, update.Message.From.ID) ||
 				l.isLinkedChannel(update.Message)
 			if update.Message.ReplyToMessage != nil && fromSuper {
 				if l.procSuperReply(update) {
@@ -404,7 +469,7 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	// skip spam check for anonymous admin posts from this group or from the linked channel.
 	// when admins post "as the group", SenderChat.ID equals the group's chat ID;
 	// when the linked channel posts, SenderChat.ID equals the linked channel ID.
-	if msg.SenderChat.ID != 0 && (msg.SenderChat.ID == fromChat || msg.SenderChat.ID == l.linkedChannelID) {
+	if msg.SenderChat.ID != 0 && (msg.SenderChat.ID == fromChat || l.isLinkedChannel(update.Message)) {
 		log.Printf("[DEBUG] skipping spam check for anonymous admin post from group itself or linked channel")
 		return nil
 	}
@@ -432,14 +497,14 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		if msg.SenderChat.ID != 0 {
 			spamUserID = msg.SenderChat.ID
 		}
-		if err := l.Locator.AddSpam(ctx, spamUserID, resp.CheckResults); err != nil {
+		if err := addSpamInChat(ctx, l.Locator, fromChat, spamUserID, resp.CheckResults); err != nil {
 			log.Printf("[WARN] failed to add spam to locator: %v", err)
 		}
 		banUserStr := l.getBanUsername(resp, update)
 
-		if l.SuperUsers.IsSuper(msg.From.Username, msg.From.ID) {
+		if l.isSuperForChat(fromChat, msg.From.Username, msg.From.ID) {
 			if l.TrainingMode {
-				l.adminHandler.ReportBan(banUserStr, msg)
+				l.adminHandlerForChat(fromChat).ReportBan(banUserStr, msg)
 			}
 			log.Printf("[DEBUG] superuser %s requested ban, ignored", banUserStr)
 			return nil
@@ -450,22 +515,23 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		if err := banUserOrChannel(banReq); err != nil {
 			errs = multierror.Append(errs, fmt.Errorf("failed to ban %s: %w", banUserStr, err))
 		} else if l.adminChatID != 0 && msg.From.ID != 0 {
-			l.adminHandler.ReportBan(banUserStr, msg)
+			l.adminHandlerForChat(fromChat).ReportBan(banUserStr, msg)
 		}
 	}
 
 	// delete extra messages if spam detected (e.g., duplicates); runs in a goroutine because the
 	// rate-limit sleeps between deletions would otherwise stall the single-threaded update loop,
 	// same pattern as admin's aggressiveCleanup
-	go l.deleteExtraMessages(resp.CheckResults, msg.From.ID, msg.From.Username, fromChat)
+	isSuper := l.isSuperForChat(fromChat, msg.From.Username, msg.From.ID)
+	go l.deleteExtraMessages(resp.CheckResults, msg.From.ID, msg.From.Username, fromChat, isSuper)
 
 	// delete message if requested by bot
 	canDelete := resp.DeleteReplyTo && resp.ReplyTo != 0 && !l.Dry &&
-		!l.SuperUsers.IsSuper(msg.From.Username, msg.From.ID) && !l.TrainingMode
+		!l.isSuperForChat(fromChat, msg.From.Username, msg.From.ID) && !l.TrainingMode
 	if canDelete {
 		if _, err := l.TbAPI.Request(tbapi.DeleteMessageConfig{BaseChatMessage: tbapi.BaseChatMessage{
 			MessageID:  resp.ReplyTo,
-			ChatConfig: tbapi.ChatConfig{ChatID: l.chatID},
+			ChatConfig: tbapi.ChatConfig{ChatID: fromChat},
 		}}); err != nil {
 			errs = multierror.Append(errs, fmt.Errorf("failed to delete message %d: %w", resp.ReplyTo, err))
 		}
@@ -479,22 +545,23 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 
 // procSuperReply processes superuser commands (reply) /spam, /ban, /warn
 func (l *TelegramListener) procSuperReply(update tbapi.Update) (handled bool) {
+	handler := l.adminHandlerForChat(update.Message.Chat.ID)
 	switch {
 	case strings.EqualFold(update.Message.Text, "/spam") || strings.EqualFold(update.Message.Text, "spam"):
 		log.Printf("[DEBUG] superuser %s reported spam", update.Message.From.UserName)
-		if err := l.adminHandler.DirectSpamReport(update); err != nil {
+		if err := handler.DirectSpamReport(update); err != nil {
 			log.Printf("[WARN] failed to process direct spam report: %v", err)
 		}
 		return true
 	case strings.EqualFold(update.Message.Text, "/ban") || strings.EqualFold(update.Message.Text, "ban"):
 		log.Printf("[DEBUG] superuser %s requested ban", update.Message.From.UserName)
-		if err := l.adminHandler.DirectBanReport(update); err != nil {
+		if err := handler.DirectBanReport(update); err != nil {
 			log.Printf("[WARN] failed to process direct ban request: %v", err)
 		}
 		return true
 	case strings.EqualFold(update.Message.Text, "/warn") || strings.EqualFold(update.Message.Text, "warn"):
 		log.Printf("[DEBUG] superuser %s requested warning", update.Message.From.UserName)
-		if err := l.adminHandler.DirectWarnReport(update); err != nil {
+		if err := handler.DirectWarnReport(update); err != nil {
 			log.Printf("[WARN] failed to process direct warning request: %v", err)
 		}
 		return true
@@ -549,7 +616,7 @@ func (l *TelegramListener) procUserReply(ctx context.Context, update tbapi.Updat
 			return true // command is suppressed when feature is disabled
 		}
 		log.Printf("[DEBUG] user %s (%d) reported spam", update.Message.From.UserName, update.Message.From.ID)
-		if err := l.reportsHandler.DirectUserReport(ctx, update); err != nil {
+		if err := l.reportsHandlerForChat(update.Message.Chat.ID).DirectUserReport(ctx, update); err != nil {
 			log.Printf("[WARN] failed to process user spam report: %v", err)
 		}
 		return true
@@ -627,20 +694,86 @@ func (l *TelegramListener) deleteSystemMessage(msgID int, chatID int64, msgType 
 
 // isLinkedChannel checks if the message was sent on behalf of the linked channel
 func (l *TelegramListener) isLinkedChannel(msg *tbapi.Message) bool {
-	return l.linkedChannelID != 0 && msg.SenderChat != nil && msg.SenderChat.ID == l.linkedChannelID
+	if msg == nil || msg.SenderChat == nil {
+		return false
+	}
+	chat, found := l.chats[msg.Chat.ID]
+	if found {
+		return chat.LinkedChannelID != 0 && msg.SenderChat.ID == chat.LinkedChannelID
+	}
+	return l.linkedChannelID != 0 && msg.SenderChat.ID == l.linkedChannelID
 }
 
 func (l *TelegramListener) isChatAllowed(fromChat int64) bool {
-	if fromChat == l.chatID {
+	if _, found := l.chats[fromChat]; found {
+		return true
+	}
+	if fromChat == l.chatID && l.chatID != 0 {
 		return true
 	}
 	return slices.Contains(l.TestingIDs, fromChat)
 }
 
+func (l *TelegramListener) isSuperForChat(chatID int64, userName string, userID int64) bool {
+	if chat, found := l.chats[chatID]; found {
+		return chat.SuperUsers.IsSuper(userName, userID)
+	}
+	if l.globalSupers != nil {
+		return l.globalSupers.IsSuper(userName, userID)
+	}
+	return l.SuperUsers.IsSuper(userName, userID)
+}
+
+func (l *TelegramListener) adminHandlerForChat(chatID int64) *admin {
+	if handler, found := l.adminHandlers[chatID]; found {
+		return handler
+	}
+	return l.adminHandler
+}
+
+func (l *TelegramListener) reportsHandlerForChat(chatID int64) *userReports {
+	if handler, found := l.reportsHandlers[chatID]; found {
+		return handler
+	}
+	return l.reportsHandler
+}
+
+func (l *TelegramListener) adminHandlerForMessage(msg *tbapi.Message) *admin {
+	if msg == nil {
+		return l.adminHandler
+	}
+	text := msg.Text
+	if text == "" {
+		text = transform(msg).Text
+	}
+	sourceChatID := forwardedSourceChatID(msg)
+	if scoped, ok := l.Locator.(chatAwareMessageLocator); ok {
+		matches := scoped.Messages(context.TODO(), text)
+		if len(matches) == 1 {
+			return l.adminHandlerForChat(matches[0].ChatID)
+		}
+		if _, configured := l.chats[sourceChatID]; configured {
+			return l.adminHandlerForChat(sourceChatID)
+		}
+		return l.adminHandler
+	}
+	if info, found := l.Locator.Message(context.TODO(), text); found {
+		return l.adminHandlerForChat(info.ChatID)
+	}
+	if _, configured := l.chats[sourceChatID]; configured {
+		return l.adminHandlerForChat(sourceChatID)
+	}
+	return l.adminHandler
+}
+
 func (l *TelegramListener) isAdminChat(fromChat int64, from string, fromID int64) bool {
 	if fromChat == l.adminChatID {
 		log.Printf("[DEBUG] message in admin chat %d, from %s (%d)", fromChat, from, fromID)
-		if !l.SuperUsers.IsSuper(from, fromID) {
+		supers := l.globalSupers
+		if supers == nil {
+			supers = l.SuperUsers
+		}
+		if !supers.IsSuper(from, fromID) {
 			log.Printf("[DEBUG] %s (%d) is not superuser in admin chat, ignored", from, fromID)
 			return false
 		}
@@ -705,17 +838,54 @@ func (l *TelegramListener) sendBotResponse(resp bot.Response, chatID int64, noti
 }
 
 func (l *TelegramListener) getChatID(group string) (int64, error) {
+	group = strings.TrimSpace(group)
 	chatID, err := strconv.ParseInt(group, 10, 64)
 	if err == nil {
 		return chatID, nil
 	}
 
+	group = strings.TrimPrefix(strings.TrimSpace(group), "@")
 	chat, err := l.TbAPI.GetChat(tbapi.ChatInfoConfig{ChatConfig: tbapi.ChatConfig{SuperGroupUsername: "@" + group}})
 	if err != nil {
 		return 0, fmt.Errorf("can't get chat for %s: %w", group, err)
 	}
 
 	return chat.ID, nil
+}
+
+func (l *TelegramListener) resolveManagedChat(group string, requireInfo bool, configuredSupers SuperUsers) (managedChat, error) {
+	chatID, err := l.getChatID(group)
+	if err != nil {
+		return managedChat{}, fmt.Errorf("failed to get chat ID for group %q: %w", group, err)
+	}
+	info, err := l.TbAPI.GetChat(tbapi.ChatInfoConfig{ChatConfig: tbapi.ChatConfig{ChatID: chatID}})
+	if err != nil {
+		if requireInfo {
+			return managedChat{}, fmt.Errorf("failed to get chat info for group %q: %w", group, err)
+		}
+		log.Printf("[WARN] failed to get chat info for group %q: %v", group, err)
+	}
+	name := info.Title
+	if info.UserName != "" {
+		name = "@" + info.UserName
+	}
+	if name == "" {
+		name = strings.TrimSpace(group)
+	}
+	supers := append(SuperUsers(nil), configuredSupers...)
+	admins, adminErr := l.TbAPI.GetChatAdministrators(tbapi.ChatAdministratorsConfig{
+		ChatConfig: tbapi.ChatConfig{ChatID: chatID},
+	})
+	if adminErr != nil {
+		log.Printf("[WARN] failed to get administrators for chat %d: %v", chatID, adminErr)
+	} else {
+		for _, member := range admins {
+			if member.User.ID != 0 && !supers.IsSuper(member.User.UserName, member.User.ID) {
+				supers = append(supers, strconv.FormatInt(member.User.ID, 10))
+			}
+		}
+	}
+	return managedChat{ID: chatID, Name: name, LinkedChannelID: info.LinkedChatID, SuperUsers: supers}, nil
 }
 
 // updateSupers updates the list of super-users based on the chat administrators fetched from the Telegram API.
@@ -753,13 +923,15 @@ func (l *TelegramListener) updateSupers() error {
 }
 
 // deleteExtraMessages deletes additional messages specified in check results (e.g., duplicate messages)
-func (l *TelegramListener) deleteExtraMessages(checkResults []spamcheck.Response, userID int64, username string, chatID int64) {
+func (l *TelegramListener) deleteExtraMessages(
+	checkResults []spamcheck.Response, userID int64, username string, chatID int64, isSuper bool,
+) {
 	if len(checkResults) == 0 || l.Dry || l.TrainingMode {
 		return
 	}
 
 	// don't delete messages from superusers
-	if l.SuperUsers.IsSuper(username, userID) {
+	if isSuper {
 		log.Printf("[DEBUG] skip extra deletions for superuser %s (%d)", username, userID)
 		return
 	}
@@ -794,8 +966,8 @@ func (l *TelegramListener) procReaction(ctx context.Context, r *tbapi.MessageRea
 		log.Printf("[DEBUG] reaction from anonymous user, skipped")
 		return nil
 	}
-	if r.Chat.ID != l.chatID {
-		log.Printf("[DEBUG] reaction from chat %d, not primary chat %d, skipped", r.Chat.ID, l.chatID)
+	if !l.isChatAllowed(r.Chat.ID) {
+		log.Printf("[DEBUG] reaction from unconfigured chat %d skipped", r.Chat.ID)
 		return nil
 	}
 	// count only net new reactions; changes (👍→👎) and removals have newReactionsAdded <= 0
@@ -804,14 +976,14 @@ func (l *TelegramListener) procReaction(ctx context.Context, r *tbapi.MessageRea
 		return nil
 	}
 
-	if l.SuperUsers.IsSuper(r.User.UserName, r.User.ID) {
+	if l.isSuperForChat(r.Chat.ID, r.User.UserName, r.User.ID) {
 		log.Printf("[DEBUG] superuser %s reaction ignored", r.User.UserName)
 		return nil
 	}
 
 	var resp bot.Response
 	for range newReactionsAdded {
-		resp = l.Bot.OnReaction(r.User.ID, r.User.UserName)
+		resp = onReactionInChat(l.Bot, r.Chat.ID, r.User.ID, r.User.UserName)
 		if resp.BanInterval > 0 {
 			break
 		}
@@ -820,21 +992,21 @@ func (l *TelegramListener) procReaction(ctx context.Context, r *tbapi.MessageRea
 		return nil
 	}
 
-	if err := l.Locator.AddSpam(ctx, r.User.ID, resp.CheckResults); err != nil {
+	if err := addSpamInChat(ctx, l.Locator, r.Chat.ID, r.User.ID, resp.CheckResults); err != nil {
 		log.Printf("[WARN] failed to add reaction spam to locator: %v", err)
 	}
-	l.SpamLogger.Save(&bot.Message{From: resp.User, Text: "[reaction spam]"}, &resp)
+	l.SpamLogger.Save(&bot.Message{From: resp.User, Text: "[reaction spam]", ChatID: r.Chat.ID}, &resp)
 
 	banUserStr := resp.User.String()
 	banReq := banRequest{
 		duration: resp.BanInterval, userID: resp.User.ID, userName: banUserStr,
-		chatID: l.chatID, dry: l.Dry, training: l.TrainingMode, tbAPI: l.TbAPI, restrict: l.SoftBanMode,
+		chatID: r.Chat.ID, dry: l.Dry, training: l.TrainingMode, tbAPI: l.TbAPI, restrict: l.SoftBanMode,
 	}
 	if err := banUserOrChannel(banReq); err != nil {
 		return fmt.Errorf("failed to ban reaction spammer %s: %w", banUserStr, err)
 	}
 	if l.adminChatID != 0 && resp.User.ID != 0 {
-		l.adminHandler.ReportReactionBan(banUserStr, resp.User)
+		l.adminHandlerForChat(r.Chat.ID).ReportReactionBan(banUserStr, resp.User)
 	}
 	return nil
 }

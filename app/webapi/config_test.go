@@ -28,7 +28,7 @@ func TestSaveConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -59,7 +59,7 @@ func TestSaveConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -91,7 +91,7 @@ func TestSaveConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -115,7 +115,7 @@ func TestSaveConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -140,7 +140,7 @@ func TestLoadConfigHandler(t *testing.T) {
 		storedSettings := &config.Settings{
 			InstanceID: "stored-instance",
 			Telegram: config.TelegramSettings{
-				Group: "stored-group",
+				Group: config.ChatGroups{"stored-group"},
 			},
 		}
 
@@ -153,7 +153,7 @@ func TestLoadConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -174,14 +174,14 @@ func TestLoadConfigHandler(t *testing.T) {
 
 		// verify the current settings have been updated
 		assert.Equal(t, "stored-instance", srv.AppSettings.InstanceID)
-		assert.Equal(t, "stored-group", srv.AppSettings.Telegram.Group)
+		assert.Equal(t, config.ChatGroups{"stored-group"}, srv.AppSettings.Telegram.Group)
 	})
 
 	t.Run("successful load with HTMX request", func(t *testing.T) {
 		storedSettings := &config.Settings{
 			InstanceID: "stored-instance",
 			Telegram: config.TelegramSettings{
-				Group: "stored-group",
+				Group: config.ChatGroups{"stored-group"},
 			},
 		}
 
@@ -194,7 +194,7 @@ func TestLoadConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -225,7 +225,7 @@ func TestLoadConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -246,14 +246,14 @@ func TestLoadConfigHandler(t *testing.T) {
 
 		// verify the current settings haven't changed
 		assert.Equal(t, "test-instance", srv.AppSettings.InstanceID)
-		assert.Equal(t, "test-group", srv.AppSettings.Telegram.Group)
+		assert.Equal(t, config.ChatGroups{"test-group"}, srv.AppSettings.Telegram.Group)
 	})
 
 	t.Run("db tokens win on reload, transient and cli auth preserved", func(t *testing.T) {
 		storedSettings := &config.Settings{
 			InstanceID: "stored-instance",
 			Telegram: config.TelegramSettings{
-				Group: "stored-group",
+				Group: config.ChatGroups{"stored-group"},
 				Token: "stored-token",
 			},
 			OpenAI: config.OpenAISettings{
@@ -279,7 +279,7 @@ func TestLoadConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 				Token: "memory-token",
 			},
 			OpenAI: config.OpenAISettings{
@@ -317,7 +317,7 @@ func TestLoadConfigHandler(t *testing.T) {
 
 		// stored DB values win for tokens - in --confdb mode DB is authoritative
 		assert.Equal(t, "stored-instance", srv.AppSettings.InstanceID)
-		assert.Equal(t, "stored-group", srv.AppSettings.Telegram.Group)
+		assert.Equal(t, config.ChatGroups{"stored-group"}, srv.AppSettings.Telegram.Group)
 		assert.Equal(t, "stored-token", srv.AppSettings.Telegram.Token)
 		assert.Equal(t, "stored-openai-token", srv.AppSettings.OpenAI.Token)
 		assert.Equal(t, "stored-gemini-token", srv.AppSettings.Gemini.Token)
@@ -418,7 +418,7 @@ func TestLoadConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -539,7 +539,7 @@ func TestUpdateConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 			Meta: config.MetaSettings{
 				LinksLimit: -1,
@@ -571,7 +571,7 @@ func TestUpdateConfigHandler(t *testing.T) {
 		assert.Contains(t, w.Body.String(), `"status":"ok"`)
 
 		// verify the settings were updated
-		assert.Equal(t, "new-group", srv.AppSettings.Telegram.Group)
+		assert.Equal(t, config.ChatGroups{"new-group"}, srv.AppSettings.Telegram.Group)
 		assert.Equal(t, 5, srv.AppSettings.Meta.LinksLimit)
 		assert.InEpsilon(t, 0.8, srv.AppSettings.SimilarityThreshold, 0.0001)
 	})
@@ -580,7 +580,7 @@ func TestUpdateConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -605,7 +605,7 @@ func TestUpdateConfigHandler(t *testing.T) {
 		assert.Contains(t, w.Body.String(), "Configuration updated successfully")
 
 		// verify the settings were updated
-		assert.Equal(t, "new-group", srv.AppSettings.Telegram.Group)
+		assert.Equal(t, config.ChatGroups{"new-group"}, srv.AppSettings.Telegram.Group)
 		assert.True(t, srv.AppSettings.ParanoidMode)
 	})
 
@@ -619,7 +619,7 @@ func TestUpdateConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 		}
 
@@ -776,7 +776,7 @@ func TestUpdateConfigHandler(t *testing.T) {
 		appSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "test-group",
+				Group: config.ChatGroups{"test-group"},
 			},
 			Meta: config.MetaSettings{
 				LinksLimit:    -1,
@@ -947,7 +947,7 @@ func TestUpdateSettingsFromForm(t *testing.T) {
 	t.Run("boolean flags and simple fields", func(t *testing.T) {
 		settings := &config.Settings{
 			Telegram: config.TelegramSettings{
-				Group: "original-group",
+				Group: config.ChatGroups{"original-group"},
 			},
 			Meta:         config.MetaSettings{},
 			ParanoidMode: false,
@@ -966,7 +966,7 @@ func TestUpdateSettingsFromForm(t *testing.T) {
 
 		updateSettingsFromForm(settings, req)
 
-		assert.Equal(t, "new-group", settings.Telegram.Group)
+		assert.Equal(t, config.ChatGroups{"new-group"}, settings.Telegram.Group)
 		assert.True(t, settings.ParanoidMode)
 		assert.True(t, settings.NoSpamReply)
 	})
@@ -1328,6 +1328,15 @@ func TestUpdateSettingsFromForm_NewGroups(t *testing.T) {
 		form   url.Values
 		assert func(t *testing.T, s *config.Settings)
 	}{
+		{
+			name: "protected groups comma and newline separated",
+			form: url.Values{
+				"protectedGroups": []string{" one, two\n one \nthree"},
+			},
+			assert: func(t *testing.T, s *config.Settings) {
+				assert.Equal(t, config.ChatGroups{"one", "two", "three"}, s.Telegram.Group)
+			},
+		},
 		{
 			name: "delete group toggles on",
 			form: url.Values{
@@ -2005,7 +2014,7 @@ func TestUpdateConfigHandler_SaveFailure_RollsBackInMemory(t *testing.T) {
 	appSettings := &config.Settings{
 		InstanceID: "test-instance",
 		Telegram: config.TelegramSettings{
-			Group: "original-group",
+			Group: config.ChatGroups{"original-group"},
 		},
 		ParanoidMode:        false,
 		SimilarityThreshold: 0.5,
@@ -2038,7 +2047,7 @@ func TestUpdateConfigHandler_SaveFailure_RollsBackInMemory(t *testing.T) {
 	assert.Len(t, settingsStore.SaveCalls(), 1)
 
 	// verify in-memory state matches pre-call values, not the form values
-	assert.Equal(t, "original-group", srv.AppSettings.Telegram.Group, "Telegram.Group must roll back")
+	assert.Equal(t, config.ChatGroups{"original-group"}, srv.AppSettings.Telegram.Group, "Telegram.Group must roll back")
 	assert.False(t, srv.AppSettings.ParanoidMode, "ParanoidMode must roll back")
 	assert.InEpsilon(t, 0.5, srv.AppSettings.SimilarityThreshold, 0.0001, "SimilarityThreshold must roll back")
 	assert.Equal(t, 5, srv.AppSettings.MinMsgLen, "MinMsgLen must roll back")
@@ -2055,7 +2064,7 @@ func TestUpdateConfigHandler_SaveSuccess_KeepsMutation(t *testing.T) {
 	appSettings := &config.Settings{
 		InstanceID: "test-instance",
 		Telegram: config.TelegramSettings{
-			Group: "original-group",
+			Group: config.ChatGroups{"original-group"},
 		},
 		MinMsgLen: 5,
 	}
@@ -2081,7 +2090,7 @@ func TestUpdateConfigHandler_SaveSuccess_KeepsMutation(t *testing.T) {
 	assert.Len(t, settingsStore.SaveCalls(), 1)
 
 	// verify mutations stuck through the success path
-	assert.Equal(t, "mutated-group", srv.AppSettings.Telegram.Group)
+	assert.Equal(t, config.ChatGroups{"mutated-group"}, srv.AppSettings.Telegram.Group)
 	assert.Equal(t, 42, srv.AppSettings.MinMsgLen)
 }
 
@@ -2092,7 +2101,7 @@ func TestUpdateConfigHandler_HTMXResponse_HasTargetID(t *testing.T) {
 	appSettings := &config.Settings{
 		InstanceID: "test-instance",
 		Telegram: config.TelegramSettings{
-			Group: "test-group",
+			Group: config.ChatGroups{"test-group"},
 		},
 	}
 

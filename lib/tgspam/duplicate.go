@@ -17,7 +17,7 @@ import (
 type duplicateDetector struct {
 	threshold         int
 	window            time.Duration
-	cache             cache.Cache[int64, userHistory] // LRU cache with max users limit
+	cache             cache.Cache[chatUserKey, userHistory] // LRU cache with max users limit
 	mu                sync.RWMutex
 	lastCleanup       time.Time
 	cleanupInterval   time.Duration
@@ -55,7 +55,7 @@ func newDuplicateDetector(threshold int, window time.Duration) *duplicateDetecto
 	return &duplicateDetector{
 		threshold:         threshold,
 		window:            window,
-		cache:             cache.NewCache[int64, userHistory]().WithMaxKeys(defaultMaxUsers).WithTTL(window * 2),
+		cache:             cache.NewCache[chatUserKey, userHistory]().WithMaxKeys(defaultMaxUsers).WithTTL(window * 2),
 		cleanupInterval:   10 * time.Minute,
 		maxUsers:          defaultMaxUsers,
 		maxEntriesPerUser: defaultMaxEntriesPerUser,
@@ -77,7 +77,7 @@ func (d *duplicateDetector) check(req spamcheck.Request) spamcheck.Response {
 		return spamcheck.Response{Name: "duplicate", Spam: false, Details: "invalid user id"}
 	}
 
-	count, extraIDs, isEdit := d.trackMessage(userID, req.Msg, req.Meta.MessageID)
+	count, extraIDs, isEdit := d.trackMessage(req.Meta.ChatID, userID, req.Msg, req.Meta.MessageID)
 
 	// if this is an edit of an already-handled message, don't re-trigger spam detection
 	if isEdit {
@@ -87,9 +87,10 @@ func (d *duplicateDetector) check(req spamcheck.Request) spamcheck.Response {
 	if count >= d.threshold {
 		msgHash := d.hash(req.Msg)
 		return spamcheck.Response{
-			Name:           "duplicate",
-			Spam:           true,
-			Details:        fmt.Sprintf("message repeated %d times in %s", count, d.formatDuration(userID, msgHash)),
+			Name: "duplicate",
+			Spam: true,
+			Details: fmt.Sprintf("message repeated %d times in %s", count,
+				d.formatDuration(req.Meta.ChatID, userID, msgHash)),
 			ExtraDeleteIDs: extraIDs,
 		}
 	}
@@ -98,9 +99,12 @@ func (d *duplicateDetector) check(req spamcheck.Request) spamcheck.Response {
 }
 
 // trackMessage tracks a message and returns the count of duplicates, extra message IDs to delete, and whether this is an edit
-func (d *duplicateDetector) trackMessage(userID int64, msg string, messageID int) (count int, extraIDs []int, isEdit bool) {
+func (d *duplicateDetector) trackMessage(
+	chatID, userID int64, msg string, messageID int,
+) (count int, extraIDs []int, isEdit bool) {
 	msgHash := d.hash(msg)
 	now := time.Now()
+	key := chatUserKey{chatID: chatID, userID: fmt.Sprintf("%d", userID)}
 
 	// use mutex to protect the entire Get-Modify-Set operation
 	// this ensures atomicity for each user's history updates
@@ -114,7 +118,7 @@ func (d *duplicateDetector) trackMessage(userID int64, msg string, messageID int
 	}
 
 	// get or create user history
-	history, found := d.cache.Get(userID)
+	history, found := d.cache.Get(key)
 	if !found {
 		history = userHistory{
 			entries:  make([]hashEntry, 0),
@@ -214,7 +218,7 @@ func (d *duplicateDetector) trackMessage(userID int64, msg string, messageID int
 	history.trackers = newTrackers
 
 	// update cache with modified history
-	d.cache.Set(userID, history, d.window*2)
+	d.cache.Set(key, history, d.window*2)
 
 	return count, extraIDs, isEdit
 }
@@ -305,9 +309,9 @@ func (d *duplicateDetector) hash(msg string) string {
 }
 
 // formatDuration returns the duration between first and last occurrence of a duplicate
-func (d *duplicateDetector) formatDuration(userID int64, msgHash string) string {
+func (d *duplicateDetector) formatDuration(chatID, userID int64, msgHash string) string {
 	// get user history to find the tracker
-	history, found := d.cache.Get(userID)
+	history, found := d.cache.Get(chatUserKey{chatID: chatID, userID: fmt.Sprintf("%d", userID)})
 	if !found {
 		return d.window.String() // fallback to window if history not found
 	}

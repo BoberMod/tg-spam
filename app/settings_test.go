@@ -294,7 +294,7 @@ func TestOptToSettings(t *testing.T) {
 		o.AggressiveCleanupLimit = 200
 
 		o.Telegram.Token = "bot-token"
-		o.Telegram.Group = "test-group"
+		o.Telegram.Group = []string{"test-group"}
 		o.Telegram.IdleDuration = 5 * time.Minute
 		o.Telegram.Timeout = 30 * time.Second
 
@@ -426,7 +426,7 @@ func TestOptToSettings(t *testing.T) {
 
 				// telegram settings
 				assert.Equal(t, "bot-token", settings.Telegram.Token)
-				assert.Equal(t, "test-group", settings.Telegram.Group)
+				assert.Equal(t, config.ChatGroups{"test-group"}, settings.Telegram.Group)
 				assert.Equal(t, 5*time.Minute, settings.Telegram.IdleDuration)
 				assert.Equal(t, 30*time.Second, settings.Telegram.Timeout)
 
@@ -624,7 +624,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 			MinSpamProbability:  50,
 			SimilarityThreshold: 0.5,
 			Telegram: config.TelegramSettings{
-				Group:        "test-group",
+				Group:        config.ChatGroups{"test-group"},
 				Timeout:      5 * time.Second,
 				IdleDuration: 10 * time.Second,
 				Token:        "test-token", // token directly in domain model
@@ -778,7 +778,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 				Duration: 48 * time.Hour,
 			},
 			Telegram: config.TelegramSettings{
-				Group: "db-group",
+				Group: config.ChatGroups{"db-group"},
 			},
 			Transient: config.TransientSettings{
 				DataBaseURL: dbFile,
@@ -802,7 +802,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 				WebAuthPasswd:  "cli-password",
 			},
 			Telegram: config.TelegramSettings{
-				Group: "cli-group",
+				Group: config.ChatGroups{"cli-group"},
 				Token: "cli-token",
 			},
 			OpenAI: config.OpenAISettings{
@@ -842,10 +842,10 @@ func TestSaveAndLoadConfig(t *testing.T) {
 		assert.Equal(t, 30*time.Second, cliSettings.Transient.StorageTimeout)
 
 		// DB values should be loaded for non-transient fields
-		assert.True(t, cliSettings.Dry)                             // from DB
-		assert.Equal(t, 5, cliSettings.MultiLangWords)              // from DB
-		assert.Equal(t, 48*time.Hour, cliSettings.History.Duration) // from DB
-		assert.Equal(t, "db-group", cliSettings.Telegram.Group)     // from DB
+		assert.True(t, cliSettings.Dry)                                            // from DB
+		assert.Equal(t, 5, cliSettings.MultiLangWords)                             // from DB
+		assert.Equal(t, 48*time.Hour, cliSettings.History.Duration)                // from DB
+		assert.Equal(t, config.ChatGroups{"db-group"}, cliSettings.Telegram.Group) // from DB
 	})
 
 	t.Run("error handling - database error", func(t *testing.T) {
@@ -965,7 +965,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 		dbSettings := &config.Settings{
 			InstanceID: "test-instance",
 			Telegram: config.TelegramSettings{
-				Group: "db-group",
+				Group: config.ChatGroups{"db-group"},
 				Token: "db-token",
 			},
 			Server: config.ServerSettings{
@@ -1009,7 +1009,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 		applyCLIOverrides(loadedSettings, cliOpts, defaults)
 
 		// verify database values were loaded
-		assert.Equal(t, "db-group", loadedSettings.Telegram.Group)
+		assert.Equal(t, config.ChatGroups{"db-group"}, loadedSettings.Telegram.Group)
 		assert.Equal(t, "db-token", loadedSettings.Telegram.Token)
 
 		// verify CLI override was applied
@@ -1161,7 +1161,7 @@ func TestLoadConfigFromDB_PreservesCLIInstanceIDOnEmptyBlob(t *testing.T) {
 	blob := &config.Settings{
 		InstanceID: "",
 		Dry:        true,
-		Telegram:   config.TelegramSettings{Group: "g"},
+		Telegram:   config.TelegramSettings{Group: config.ChatGroups{"g"}},
 		Transient:  config.TransientSettings{DataBaseURL: dbFile},
 	}
 	ctx := context.Background()

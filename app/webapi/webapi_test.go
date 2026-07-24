@@ -470,7 +470,7 @@ func TestServer_routes(t *testing.T) {
 		assert.Len(t, detectorMock.ApprovedUsersCalls(), 1)
 		respBody, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
-		assert.JSONEq(t, `{"user_ids":[{"user_id":"user1","user_name":"name1","timestamp":"0001-01-01T00:00:00Z"},{"user_id":"user2","user_name":"name2","timestamp":"0001-01-01T00:00:00Z"}]}`+"\n", string(respBody))
+		assert.JSONEq(t, `{"user_ids":[{"user_id":"user1","user_name":"name1","chat_id":0,"scope":"All chats","timestamp":"0001-01-01T00:00:00Z"},{"user_id":"user2","user_name":"name2","chat_id":0,"scope":"All chats","timestamp":"0001-01-01T00:00:00Z"}]}`+"\n", string(respBody))
 	})
 	t.Run("get settings", func(t *testing.T) {
 		// initialize AppSettings with the domain model
@@ -1059,7 +1059,7 @@ func TestServer_htmlSpamCheckHandler(t *testing.T) {
 			Version: "2.0-test",
 			AppSettings: &config.Settings{
 				Telegram: config.TelegramSettings{
-					Group: "test-group",
+					Group: config.ChatGroups{"test-group"},
 				},
 				Admin: config.AdminSettings{
 					AdminGroup: "admin-group",
@@ -2119,7 +2119,7 @@ func TestTemplateRendering(t *testing.T) {
 					FirstMessagesCount:  3,
 					Training:            true,
 					SoftBan:             false,
-					Telegram:            config.TelegramSettings{Group: "test-group"},
+					Telegram:            config.TelegramSettings{Group: config.ChatGroups{"test-group"}},
 					Admin:               config.AdminSettings{AdminGroup: "admin-group", SuperUsers: []string{"user1", "user2"}},
 					History:             config.HistorySettings{Size: 100, MinSize: 10},
 					Logger:              config.LoggerSettings{Enabled: true},

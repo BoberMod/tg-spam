@@ -50,7 +50,7 @@ func (s *StorageTestSuite) TestApprovedUsers_NewApprovedUsers() {
 				var columnCount int
 				err = db.Get(&columnCount, "SELECT COUNT(*) FROM pragma_table_info('approved_users')")
 				s.Require().NoError(err)
-				s.Equal(5, columnCount) // id, uid, gid, name, timestamp
+				s.Equal(6, columnCount) // id, uid, gid, name, timestamp, chat_id
 			})
 
 			s.Run("nil db connection", func() {
@@ -170,6 +170,55 @@ func (s *StorageTestSuite) TestApprovedUsers_Write() {
 					}
 				})
 			}
+		})
+	}
+}
+
+func (s *StorageTestSuite) TestApprovedUsers_Scopes() {
+	ctx := context.Background()
+	db, err := engine.NewSqlite(":memory:", "approval-scopes")
+	s.Require().NoError(err)
+	defer db.Close()
+	users, err := NewApprovedUsers(ctx, db)
+	s.Require().NoError(err)
+
+	s.Require().NoError(users.Write(ctx, approved.UserInfo{UserID: "42", UserName: "global", ChatID: 0}))
+	s.Require().NoError(users.Write(ctx, approved.UserInfo{UserID: "42", UserName: "local", ChatID: 100}))
+	stored, err := users.Read(ctx)
+	s.Require().NoError(err)
+	s.Require().Len(stored, 2)
+	s.ElementsMatch([]int64{0, 100}, []int64{stored[0].ChatID, stored[1].ChatID})
+
+	s.Require().NoError(users.Delete(ctx, "42"))
+	stored, err = users.Read(ctx)
+	s.Require().NoError(err)
+	s.Empty(stored, "confirmed spam removal must clear every approval scope")
+}
+
+func (s *StorageTestSuite) TestApprovedUsers_MigrateGlobalScope() {
+	ctx := context.Background()
+	for _, dbt := range s.getTestDB() {
+		db := dbt.DB
+		s.Run(fmt.Sprintf("with %s", db.Type()), func() {
+			db.Exec("DROP TABLE IF EXISTS approved_users")
+			defer db.Exec("DROP TABLE IF EXISTS approved_users")
+			_, err := db.Exec(`CREATE TABLE approved_users (
+				uid TEXT, gid TEXT DEFAULT '', name TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(gid, uid))`)
+			s.Require().NoError(err)
+			_, err = db.Exec(db.Adopt("INSERT INTO approved_users (uid, gid, name) VALUES (?, ?, ?)"), "42", db.GID(), "legacy")
+			s.Require().NoError(err)
+
+			users, err := NewApprovedUsers(ctx, db)
+			s.Require().NoError(err)
+			loaded, err := users.Read(ctx)
+			s.Require().NoError(err)
+			s.Require().Len(loaded, 1)
+			s.Zero(loaded[0].ChatID, "legacy approvals are global")
+			s.Require().NoError(users.Write(ctx, approved.UserInfo{UserID: "42", UserName: "local", ChatID: 100}))
+			loaded, err = users.Read(ctx)
+			s.Require().NoError(err)
+			s.Len(loaded, 2, "global and chat-local scopes can coexist")
 		})
 	}
 }

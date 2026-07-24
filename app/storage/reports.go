@@ -97,7 +97,8 @@ var reportsQueries = engine.NewQueryMap().
 			"ON CONFLICT (gid, msg_id, chat_id, reporter_user_id) DO NOTHING",
 	}).
 	AddSame(CmdGetReportsByMessage, "SELECT * FROM reports WHERE gid = ? AND msg_id = ? AND chat_id = ? ORDER BY report_time ASC").
-	AddSame(CmdGetReporterCountSince, "SELECT COUNT(*) FROM reports WHERE gid = ? AND reporter_user_id = ? AND report_time > ?").
+	AddSame(CmdGetReporterCountSince,
+		"SELECT COUNT(*) FROM reports WHERE gid = ? AND chat_id = ? AND reporter_user_id = ? AND report_time > ?").
 	AddSame(CmdUpdateReportsAdminMsgID,
 		"UPDATE reports SET notification_sent = true, admin_msg_id = ? WHERE gid = ? AND msg_id = ? AND chat_id = ?").
 	AddSame(CmdDeleteReporter, "DELETE FROM reports WHERE gid = ? AND reporter_user_id = ? AND msg_id = ? AND chat_id = ?").
@@ -187,6 +188,18 @@ func (r *Reports) GetByMessage(ctx context.Context, msgID int, chatID int64) ([]
 func (r *Reports) GetReporterCountSince(ctx context.Context, reporterID int64, since time.Time) (int, error) {
 	r.RLock()
 	defer r.RUnlock()
+	query := r.Adopt("SELECT COUNT(*) FROM reports WHERE gid = ? AND reporter_user_id = ? AND report_time > ?")
+	var count int
+	if err := r.GetContext(ctx, &count, query, r.GID(), reporterID, since); err != nil {
+		return 0, fmt.Errorf("failed to get reporter count: %w", err)
+	}
+	return count, nil
+}
+
+// GetReporterCountSinceChat returns the report count for a reporter in a protected chat.
+func (r *Reports) GetReporterCountSinceChat(ctx context.Context, chatID, reporterID int64, since time.Time) (int, error) {
+	r.RLock()
+	defer r.RUnlock()
 
 	query, err := reportsQueries.Pick(r.Type(), CmdGetReporterCountSince)
 	if err != nil {
@@ -195,7 +208,7 @@ func (r *Reports) GetReporterCountSince(ctx context.Context, reporterID int64, s
 	query = r.Adopt(query)
 
 	var count int
-	if err := r.GetContext(ctx, &count, query, r.GID(), reporterID, since); err != nil {
+	if err := r.GetContext(ctx, &count, query, r.GID(), chatID, reporterID, since); err != nil {
 		return 0, fmt.Errorf("failed to get reporter count: %w", err)
 	}
 

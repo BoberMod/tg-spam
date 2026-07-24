@@ -1472,11 +1472,11 @@ func TestUserReports_SendReportNotification(t *testing.T) {
 		require.Len(t, keyboard.InlineKeyboard, 1, "should have 1 row")
 		require.Len(t, keyboard.InlineKeyboard[0], 3, "row should have 3 buttons")
 		assert.Equal(t, "✅ Approve Ban", keyboard.InlineKeyboard[0][0].Text)
-		assert.Equal(t, "R+666:100", *keyboard.InlineKeyboard[0][0].CallbackData)
+		assert.Equal(t, "R+200:666:100", *keyboard.InlineKeyboard[0][0].CallbackData)
 		assert.Equal(t, "❌ Reject", keyboard.InlineKeyboard[0][1].Text)
-		assert.Equal(t, "R-666:100", *keyboard.InlineKeyboard[0][1].CallbackData)
+		assert.Equal(t, "R-200:666:100", *keyboard.InlineKeyboard[0][1].CallbackData)
 		assert.Equal(t, "⛔️ Ban Reporters", keyboard.InlineKeyboard[0][2].Text)
-		assert.Equal(t, "R?666:100", *keyboard.InlineKeyboard[0][2].CallbackData)
+		assert.Equal(t, "R?200:666:100", *keyboard.InlineKeyboard[0][2].CallbackData)
 	})
 
 	t.Run("empty reported name falls back to user<id> link", func(t *testing.T) {
@@ -1807,11 +1807,11 @@ func TestUserReports_UpdateReportNotification(t *testing.T) {
 		require.Len(t, editedMsg.ReplyMarkup.InlineKeyboard, 1, "should have 1 row")
 		require.Len(t, editedMsg.ReplyMarkup.InlineKeyboard[0], 3, "row should have 3 buttons")
 		assert.Equal(t, "✅ Approve Ban", editedMsg.ReplyMarkup.InlineKeyboard[0][0].Text)
-		assert.Equal(t, "R+666:100", *editedMsg.ReplyMarkup.InlineKeyboard[0][0].CallbackData)
+		assert.Equal(t, "R+200:666:100", *editedMsg.ReplyMarkup.InlineKeyboard[0][0].CallbackData)
 		assert.Equal(t, "❌ Reject", editedMsg.ReplyMarkup.InlineKeyboard[0][1].Text)
-		assert.Equal(t, "R-666:100", *editedMsg.ReplyMarkup.InlineKeyboard[0][1].CallbackData)
+		assert.Equal(t, "R-200:666:100", *editedMsg.ReplyMarkup.InlineKeyboard[0][1].CallbackData)
 		assert.Equal(t, "⛔️ Ban Reporters", editedMsg.ReplyMarkup.InlineKeyboard[0][2].Text)
-		assert.Equal(t, "R?666:100", *editedMsg.ReplyMarkup.InlineKeyboard[0][2].CallbackData)
+		assert.Equal(t, "R?200:666:100", *editedMsg.ReplyMarkup.InlineKeyboard[0][2].CallbackData)
 	})
 
 	t.Run("successful update adding new reporter to existing notification", func(t *testing.T) {
@@ -2261,11 +2261,11 @@ func TestUserReports_CallbackReportBanReporterAsk(t *testing.T) {
 					assert.Equal(t, 999, editMarkup.MessageID)
 					require.Len(t, editMarkup.ReplyMarkup.InlineKeyboard, 3)
 					assert.Equal(t, "Ban reporter1", editMarkup.ReplyMarkup.InlineKeyboard[0][0].Text)
-					assert.Equal(t, "R!111:100", *editMarkup.ReplyMarkup.InlineKeyboard[0][0].CallbackData)
+					assert.Equal(t, "R!200:111:100", *editMarkup.ReplyMarkup.InlineKeyboard[0][0].CallbackData)
 					assert.Equal(t, "Ban reporter2", editMarkup.ReplyMarkup.InlineKeyboard[1][0].Text)
-					assert.Equal(t, "R!222:100", *editMarkup.ReplyMarkup.InlineKeyboard[1][0].CallbackData)
+					assert.Equal(t, "R!200:222:100", *editMarkup.ReplyMarkup.InlineKeyboard[1][0].CallbackData)
 					assert.Equal(t, "Cancel", editMarkup.ReplyMarkup.InlineKeyboard[2][0].Text)
-					assert.Equal(t, "RX666:100", *editMarkup.ReplyMarkup.InlineKeyboard[2][0].CallbackData)
+					assert.Equal(t, "RX200:666:100", *editMarkup.ReplyMarkup.InlineKeyboard[2][0].CallbackData)
 				}
 				return tbapi.Message{}, nil
 			},
@@ -2424,11 +2424,11 @@ func TestUserReports_CallbackReportCancel(t *testing.T) {
 					require.Len(t, editMarkup.ReplyMarkup.InlineKeyboard, 1, "should have 1 row of buttons")
 					require.Len(t, editMarkup.ReplyMarkup.InlineKeyboard[0], 3, "row should have 3 buttons")
 					assert.Equal(t, "✅ Approve Ban", editMarkup.ReplyMarkup.InlineKeyboard[0][0].Text)
-					assert.Equal(t, "R+666:100", *editMarkup.ReplyMarkup.InlineKeyboard[0][0].CallbackData)
+					assert.Equal(t, "R+0:666:100", *editMarkup.ReplyMarkup.InlineKeyboard[0][0].CallbackData)
 					assert.Equal(t, "❌ Reject", editMarkup.ReplyMarkup.InlineKeyboard[0][1].Text)
-					assert.Equal(t, "R-666:100", *editMarkup.ReplyMarkup.InlineKeyboard[0][1].CallbackData)
+					assert.Equal(t, "R-0:666:100", *editMarkup.ReplyMarkup.InlineKeyboard[0][1].CallbackData)
 					assert.Equal(t, "⛔️ Ban Reporters", editMarkup.ReplyMarkup.InlineKeyboard[0][2].Text)
-					assert.Equal(t, "R?666:100", *editMarkup.ReplyMarkup.InlineKeyboard[0][2].CallbackData)
+					assert.Equal(t, "R?0:666:100", *editMarkup.ReplyMarkup.InlineKeyboard[0][2].CallbackData)
 				}
 				return tbapi.Message{}, nil
 			},
@@ -2471,6 +2471,7 @@ func TestUserReports_HandleReportCallback_SecurityValidation(t *testing.T) {
 			tbAPI:        mockAPI,
 			adminChatID:  456, // admin chat ID
 			primChatID:   200,
+			superUsers:   SuperUsers{"admin"},
 			ReportConfig: ReportConfig{Storage: mockReports},
 		}
 
@@ -2490,6 +2491,27 @@ func TestUserReports_HandleReportCallback_SecurityValidation(t *testing.T) {
 		// verify callback was processed (reports deleted)
 		assert.Len(t, mockReports.GetByMessageCalls(), 1)
 		assert.Len(t, mockReports.DeleteByMessageCalls(), 1)
+	})
+
+	t.Run("callback for another protected chat is rejected", func(t *testing.T) {
+		mockReports := &mocks.ReportsMock{
+			GetByMessageFunc: func(context.Context, int, int64) ([]storage.Report, error) {
+				t.Fatal("should not load reports from another protected chat")
+				return nil, nil
+			},
+		}
+		rep := &userReports{
+			adminChatID: 456, primChatID: 200, superUsers: SuperUsers{"admin"},
+			ReportConfig: ReportConfig{Storage: mockReports},
+		}
+		query := &tbapi.CallbackQuery{
+			Data: "R-300:666:100", From: &tbapi.User{UserName: "admin"},
+			Message: &tbapi.Message{Chat: tbapi.Chat{ID: 456}, Date: time.Now().Unix()},
+		}
+
+		err := rep.HandleReportCallback(context.Background(), query)
+		require.ErrorContains(t, err, "does not match handler chat")
+		assert.Empty(t, mockReports.GetByMessageCalls())
 	})
 
 	t.Run("callback from non-admin chat should be rejected", func(t *testing.T) {
@@ -2640,6 +2662,7 @@ func TestUserReports_HandleReportCallback_SecurityValidation(t *testing.T) {
 		rep := &userReports{
 			adminChatID: 456,
 			primChatID:  200,
+			superUsers:  SuperUsers{"admin"},
 		}
 
 		query := &tbapi.CallbackQuery{
@@ -2661,6 +2684,7 @@ func TestUserReports_HandleReportCallback_SecurityValidation(t *testing.T) {
 		rep := &userReports{
 			adminChatID: 456,
 			primChatID:  200,
+			superUsers:  SuperUsers{"admin"},
 		}
 
 		query := &tbapi.CallbackQuery{

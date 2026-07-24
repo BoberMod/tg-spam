@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	_ "modernc.org/sqlite" // sqlite driver loaded here
 
 	"github.com/umputun/tg-spam/app/storage/engine"
@@ -25,6 +26,7 @@ type approvedUsersInfo struct {
 	UserID    string    `db:"uid"`
 	GroupID   string    `db:"gid"`
 	UserName  string    `db:"name"`
+	ChatID    int64     `db:"chat_id"`
 	Timestamp time.Time `db:"timestamp"`
 }
 
@@ -35,6 +37,7 @@ const (
 	CmdAddApprovedUser
 	CmdAddUIDColumn
 	CmdAddGIDColumn
+	CmdAddApprovedChatID
 )
 
 // queries holds all approved users queries
@@ -46,7 +49,8 @@ var approvedUsersQueries = engine.NewQueryMap().
             gid TEXT DEFAULT '',
             name TEXT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(gid, uid)
+			chat_id INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(gid, chat_id, uid)
         )`,
 		Postgres: `CREATE TABLE IF NOT EXISTS approved_users (
             id SERIAL PRIMARY KEY,
@@ -54,19 +58,21 @@ var approvedUsersQueries = engine.NewQueryMap().
             gid TEXT DEFAULT '',
             name TEXT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(gid, uid)
+			chat_id BIGINT NOT NULL DEFAULT 0,
+			UNIQUE(gid, chat_id, uid)
         )`,
 	}).
 	AddSame(CmdCreateApprovedUsersIndexes, `
         CREATE INDEX IF NOT EXISTS idx_approved_users_uid ON approved_users(uid);
         CREATE INDEX IF NOT EXISTS idx_approved_users_gid ON approved_users(gid);
         CREATE INDEX IF NOT EXISTS idx_approved_users_name ON approved_users(name);
-        CREATE INDEX IF NOT EXISTS idx_approved_users_timestamp ON approved_users(timestamp)
+		CREATE INDEX IF NOT EXISTS idx_approved_users_timestamp ON approved_users(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_approved_users_gid_chat ON approved_users(gid, chat_id)
     `).
 	Add(CmdAddApprovedUser, engine.Query{
-		Sqlite: "INSERT OR REPLACE INTO approved_users (uid, gid, name, timestamp) VALUES (?, ?, ?, ?)",
-		Postgres: "INSERT INTO approved_users (uid, gid, name, timestamp) VALUES ($1, $2, $3, $4) " +
-			"ON CONFLICT (gid, uid) DO UPDATE SET name=EXCLUDED.name, timestamp=EXCLUDED.timestamp",
+		Sqlite: "INSERT OR REPLACE INTO approved_users (uid, gid, name, timestamp, chat_id) VALUES (?, ?, ?, ?, ?)",
+		Postgres: "INSERT INTO approved_users (uid, gid, name, timestamp, chat_id) VALUES ($1, $2, $3, $4, $5) " +
+			"ON CONFLICT (gid, chat_id, uid) DO UPDATE SET name=EXCLUDED.name, timestamp=EXCLUDED.timestamp",
 	}).
 	Add(CmdAddUIDColumn, engine.Query{
 		Sqlite:   "ALTER TABLE approved_users ADD COLUMN uid TEXT",
@@ -75,6 +81,10 @@ var approvedUsersQueries = engine.NewQueryMap().
 	Add(CmdAddGIDColumn, engine.Query{
 		Sqlite:   "ALTER TABLE approved_users ADD COLUMN gid TEXT DEFAULT ''",
 		Postgres: "ALTER TABLE approved_users ADD COLUMN IF NOT EXISTS gid TEXT DEFAULT ''",
+	}).
+	Add(CmdAddApprovedChatID, engine.Query{
+		Sqlite:   "ALTER TABLE approved_users ADD COLUMN chat_id INTEGER NOT NULL DEFAULT 0",
+		Postgres: "ALTER TABLE approved_users ADD COLUMN IF NOT EXISTS chat_id BIGINT NOT NULL DEFAULT 0",
 	})
 
 // NewApprovedUsers creates a new ApprovedUsers storage
@@ -101,7 +111,7 @@ func (au *ApprovedUsers) Read(ctx context.Context) ([]approved.UserInfo, error) 
 	au.RLock()
 	defer au.RUnlock()
 
-	query := au.Adopt("SELECT uid, gid, name, timestamp FROM approved_users WHERE gid = ? ORDER BY uid ASC")
+	query := au.Adopt("SELECT uid, gid, name, timestamp, chat_id FROM approved_users WHERE gid = ? ORDER BY uid, chat_id ASC")
 	users := []approvedUsersInfo{}
 	if err := au.SelectContext(ctx, &users, query, au.GID()); err != nil {
 		return nil, fmt.Errorf("failed to get approved users: %w", err)
@@ -112,6 +122,7 @@ func (au *ApprovedUsers) Read(ctx context.Context) ([]approved.UserInfo, error) 
 		res[i] = approved.UserInfo{
 			UserID:    u.UserID,
 			UserName:  u.UserName,
+			ChatID:    u.ChatID,
 			Timestamp: u.Timestamp,
 		}
 	}
@@ -137,7 +148,7 @@ func (au *ApprovedUsers) Write(ctx context.Context, user approved.UserInfo) erro
 		return fmt.Errorf("failed to get write query: %w", err)
 	}
 
-	if _, err := au.ExecContext(ctx, query, user.UserID, au.GID(), user.UserName, user.Timestamp); err != nil {
+	if _, err := au.ExecContext(ctx, query, user.UserID, au.GID(), user.UserName, user.Timestamp, user.ChatID); err != nil {
 		return fmt.Errorf("failed to insert user %+v: %w", user, err)
 	}
 
@@ -156,7 +167,7 @@ func (au *ApprovedUsers) Delete(ctx context.Context, id string) error {
 
 	// check if user exists first
 	var user approvedUsersInfo
-	query := au.Adopt("SELECT uid, gid, name, timestamp FROM approved_users WHERE uid = ? AND gid = ?")
+	query := au.Adopt("SELECT uid, gid, name, timestamp, chat_id FROM approved_users WHERE uid = ? AND gid = ? LIMIT 1")
 	if err := au.GetContext(ctx, &user, query, id, au.GID()); err != nil {
 		return fmt.Errorf("failed to get approved user for id %s: %w", id, err)
 	}
@@ -176,37 +187,118 @@ func (au *ApprovedUsers) migrate(ctx context.Context, tx *sqlx.Tx, gid string) e
 	// try to select with new structure, if works - already migrated
 	var count int
 	err := tx.GetContext(ctx, &count, "SELECT COUNT(*) FROM approved_users WHERE uid='' AND gid=''")
-	if err == nil {
-		log.Printf("[DEBUG] approved_users table already migrated")
+	legacyColumnsReady := err == nil
+
+	// add legacy columns when upgrading the original id-only table
+	if !legacyColumnsReady {
+		addUIDQuery, pickErr := approvedUsersQueries.Pick(au.Type(), CmdAddUIDColumn)
+		if pickErr != nil {
+			return fmt.Errorf("failed to get add UID query: %w", pickErr)
+		}
+
+		_, err = tx.ExecContext(ctx, addUIDQuery)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("failed to add uid column: %w", err)
+		}
+
+		addGIDQuery, pickErr := approvedUsersQueries.Pick(au.Type(), CmdAddGIDColumn)
+		if pickErr != nil {
+			return fmt.Errorf("failed to get add GID query: %w", pickErr)
+		}
+
+		_, err = tx.ExecContext(ctx, addGIDQuery)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("failed to add gid column: %w", err)
+		}
+
+		migrateQuery := au.Adopt("UPDATE approved_users SET uid = id, gid = ? WHERE uid IS NULL OR uid = ''")
+		if _, err = tx.ExecContext(ctx, migrateQuery, gid); err != nil {
+			return fmt.Errorf("failed to migrate data: %w", err)
+		}
+
+		log.Printf("[DEBUG] approved_users table migrated")
+	}
+
+	var hasChatID int
+	switch au.Type() {
+	case engine.Sqlite:
+		err = tx.GetContext(ctx, &hasChatID, "SELECT COUNT(*) FROM pragma_table_info('approved_users') WHERE name = 'chat_id'")
+	case engine.Postgres:
+		err = tx.GetContext(ctx, &hasChatID, `SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_name='approved_users' AND column_name='chat_id' AND table_schema=current_schema()`)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to inspect approved user chat scope: %w", err)
+	}
+	if hasChatID == 0 {
+		query, pickErr := approvedUsersQueries.Pick(au.Type(), CmdAddApprovedChatID)
+		if pickErr != nil {
+			return fmt.Errorf("failed to get approved chat migration: %w", pickErr)
+		}
+		if _, err = tx.ExecContext(ctx, query); err != nil {
+			return fmt.Errorf("failed to add approved chat scope: %w", err)
+		}
+	}
+
+	ready, err := au.hasScopedUnique(ctx, tx)
+	if err != nil || ready {
+		return err
+	}
+	if au.Type() == engine.Sqlite {
+		stmts := []string{
+			`CREATE TABLE approved_users_new (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, gid TEXT DEFAULT '',
+				name TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, chat_id INTEGER NOT NULL DEFAULT 0,
+				UNIQUE(gid, chat_id, uid))`,
+			`INSERT INTO approved_users_new (uid, gid, name, timestamp, chat_id)
+				SELECT uid, gid, name, timestamp, chat_id FROM approved_users`,
+			"DROP TABLE approved_users",
+			"ALTER TABLE approved_users_new RENAME TO approved_users",
+		}
+		for _, stmt := range stmts {
+			if _, err = tx.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("failed to rebuild approved users: %w", err)
+			}
+		}
 		return nil
 	}
 
-	// add columns using db-specific queries
-	addUIDQuery, err := approvedUsersQueries.Pick(au.Type(), CmdAddUIDColumn)
-	if err != nil {
-		return fmt.Errorf("failed to get add UID query: %w", err)
+	var constraints []string
+	query := `SELECT tc.constraint_name FROM information_schema.table_constraints tc
+		WHERE tc.table_name='approved_users' AND tc.constraint_type='UNIQUE' AND tc.table_schema=current_schema()`
+	if err = tx.SelectContext(ctx, &constraints, query); err != nil {
+		return fmt.Errorf("failed to list approved user constraints: %w", err)
 	}
-
-	_, err = tx.ExecContext(ctx, addUIDQuery)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("failed to add uid column: %w", err)
+	for _, constraint := range constraints {
+		if _, err = tx.ExecContext(ctx, "ALTER TABLE approved_users DROP CONSTRAINT "+pq.QuoteIdentifier(constraint)); err != nil {
+			return fmt.Errorf("failed to drop approved user constraint: %w", err)
+		}
 	}
-
-	addGIDQuery, err := approvedUsersQueries.Pick(au.Type(), CmdAddGIDColumn)
-	if err != nil {
-		return fmt.Errorf("failed to get add GID query: %w", err)
+	if _, err = tx.ExecContext(ctx, `ALTER TABLE approved_users ADD CONSTRAINT approved_users_gid_chat_uid_key
+		UNIQUE (gid, chat_id, uid)`); err != nil {
+		return fmt.Errorf("failed to add approved user scoped constraint: %w", err)
 	}
-
-	_, err = tx.ExecContext(ctx, addGIDQuery)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("failed to add gid column: %w", err)
-	}
-
-	migrateQuery := au.Adopt("UPDATE approved_users SET uid = id, gid = ? WHERE uid IS NULL OR uid = ''")
-	if _, err = tx.ExecContext(ctx, migrateQuery, gid); err != nil {
-		return fmt.Errorf("failed to migrate data: %w", err)
-	}
-
-	log.Printf("[DEBUG] approved_users table migrated")
 	return nil
+}
+
+func (au *ApprovedUsers) hasScopedUnique(ctx context.Context, tx *sqlx.Tx) (bool, error) {
+	var count int
+	var query string
+	switch au.Type() {
+	case engine.Sqlite:
+		query = `SELECT COUNT(*) FROM pragma_index_list('approved_users') il WHERE il."unique"=1 AND
+			(SELECT group_concat(name, ',') FROM pragma_index_info(il.name))='gid,chat_id,uid'`
+	case engine.Postgres:
+		query = `SELECT COUNT(*) FROM (SELECT tc.constraint_name,
+			string_agg(kcu.column_name, ',' ORDER BY kcu.ordinal_position) cols
+			FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage kcu
+			ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema
+			WHERE tc.table_name='approved_users' AND tc.constraint_type='UNIQUE' AND tc.table_schema=current_schema()
+			GROUP BY tc.constraint_name) q WHERE cols='gid,chat_id,uid'`
+	default:
+		return false, fmt.Errorf("unsupported database type %q", au.Type())
+	}
+	if err := tx.GetContext(ctx, &count, query); err != nil {
+		return false, fmt.Errorf("failed to inspect approved user unique key: %w", err)
+	}
+	return count > 0, nil
 }

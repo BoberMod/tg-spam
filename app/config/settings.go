@@ -5,9 +5,13 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/umputun/tg-spam/app/storage"
 	"github.com/umputun/tg-spam/lib/tgspam"
@@ -74,10 +78,83 @@ type Settings struct {
 
 // TelegramSettings contains Telegram-specific settings
 type TelegramSettings struct {
-	Group        string        `json:"group" yaml:"group" db:"telegram_group"`
+	Group        ChatGroups    `json:"group" yaml:"group" db:"telegram_group"`
 	IdleDuration time.Duration `json:"idle_duration" yaml:"idle_duration" db:"telegram_idle_duration"`
 	Timeout      time.Duration `json:"timeout" yaml:"timeout" db:"telegram_timeout"`
 	Token        string        `json:"token" yaml:"token" db:"telegram_token"`
+}
+
+// ChatGroups is the ordered list of Telegram chats protected by one bot.
+// It accepts the legacy scalar representation while always encoding as a list.
+type ChatGroups []string
+
+// MarshalJSON encodes groups as an array, including an empty array for a nil value.
+func (g ChatGroups) MarshalJSON() ([]byte, error) {
+	data, err := json.Marshal([]string(g.Normalize()))
+	if err != nil {
+		return nil, fmt.Errorf("encode telegram groups: %w", err)
+	}
+	return data, nil
+}
+
+// UnmarshalJSON accepts either a legacy string or a list of strings.
+func (g *ChatGroups) UnmarshalJSON(data []byte) error {
+	var groups []string
+	if err := json.Unmarshal(data, &groups); err == nil {
+		*g = normalizeChatGroups(groups)
+		return nil
+	}
+	var legacy string
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return fmt.Errorf("telegram group must be a string or list: %w", err)
+	}
+	*g = normalizeChatGroups([]string{legacy})
+	return nil
+}
+
+// MarshalYAML encodes groups as a YAML sequence.
+func (g ChatGroups) MarshalYAML() (any, error) {
+	return []string(g.Normalize()), nil
+}
+
+// UnmarshalYAML accepts either a legacy scalar or a sequence.
+func (g *ChatGroups) UnmarshalYAML(node *yaml.Node) error {
+	var groups []string
+	if node.Kind == yaml.SequenceNode {
+		if err := node.Decode(&groups); err != nil {
+			return fmt.Errorf("decode telegram groups: %w", err)
+		}
+		*g = normalizeChatGroups(groups)
+		return nil
+	}
+	var legacy string
+	if err := node.Decode(&legacy); err != nil {
+		return fmt.Errorf("decode telegram group: %w", err)
+	}
+	*g = normalizeChatGroups([]string{legacy})
+	return nil
+}
+
+// Normalize removes empty and duplicate group entries while preserving order.
+func (g ChatGroups) Normalize() ChatGroups {
+	return normalizeChatGroups(g)
+}
+
+func normalizeChatGroups(groups []string) ChatGroups {
+	res := make(ChatGroups, 0, len(groups))
+	seen := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+		if _, found := seen[group]; found {
+			continue
+		}
+		seen[group] = struct{}{}
+		res = append(res, group)
+	}
+	return res
 }
 
 // AdminSettings contains admin-related settings

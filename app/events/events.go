@@ -40,6 +40,47 @@ type Locator interface {
 	GetUserMessageIDs(ctx context.Context, userID int64, limit int) ([]int, error)
 }
 
+type chatAwareLocator interface {
+	AddSpamInChat(ctx context.Context, chatID, userID int64, checks []spamcheck.Response) error
+	SpamInChat(ctx context.Context, chatID, userID int64) (storage.SpamData, bool)
+	GetUserMessageIDsInChat(ctx context.Context, chatID, userID int64, limit int) ([]int, error)
+}
+
+func addSpamInChat(ctx context.Context, locator Locator, chatID, userID int64, checks []spamcheck.Response) error {
+	if scoped, ok := locator.(chatAwareLocator); ok {
+		if err := scoped.AddSpamInChat(ctx, chatID, userID, checks); err != nil {
+			return fmt.Errorf("add chat-local spam record: %w", err)
+		}
+		return nil
+	}
+	if err := locator.AddSpam(ctx, userID, checks); err != nil {
+		return fmt.Errorf("add spam record: %w", err)
+	}
+	return nil
+}
+
+func spamInChat(ctx context.Context, locator Locator, chatID, userID int64) (storage.SpamData, bool) {
+	if scoped, ok := locator.(chatAwareLocator); ok {
+		return scoped.SpamInChat(ctx, chatID, userID)
+	}
+	return locator.Spam(ctx, userID)
+}
+
+func userMessageIDsInChat(ctx context.Context, locator Locator, chatID, userID int64, limit int) ([]int, error) {
+	if scoped, ok := locator.(chatAwareLocator); ok {
+		ids, err := scoped.GetUserMessageIDsInChat(ctx, chatID, userID, limit)
+		if err != nil {
+			return nil, fmt.Errorf("get chat-local message IDs: %w", err)
+		}
+		return ids, nil
+	}
+	ids, err := locator.GetUserMessageIDs(ctx, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get message IDs: %w", err)
+	}
+	return ids, nil
+}
+
 // Bot is an interface for bot events.
 type Bot interface {
 	OnMessage(msg bot.Message, checkOnly bool) (response bot.Response)
@@ -49,6 +90,25 @@ type Bot interface {
 	AddApprovedUser(id int64, name string) error
 	RemoveApprovedUser(id int64) error
 	IsApprovedUser(userID int64) bool
+}
+
+type chatAwareBot interface {
+	IsApprovedUserInChat(chatID, userID int64) bool
+	OnReactionInChat(chatID, userID int64, userName string) bot.Response
+}
+
+func isApprovedUserInChat(b Bot, chatID, userID int64) bool {
+	if scoped, ok := b.(chatAwareBot); ok {
+		return scoped.IsApprovedUserInChat(chatID, userID)
+	}
+	return b.IsApprovedUser(userID)
+}
+
+func onReactionInChat(b Bot, chatID, userID int64, userName string) bot.Response {
+	if scoped, ok := b.(chatAwareBot); ok {
+		return scoped.OnReactionInChat(chatID, userID, userName)
+	}
+	return b.OnReaction(userID, userName)
 }
 
 // escapeMarkDownV1Text escapes special characters used in Telegram's MarkdownV1 parse mode.
@@ -486,35 +546,67 @@ func richMessageText(rm *tbapi.RichMessage) string {
 	return strings.Join(lines, "\n")
 }
 
-// parseCallbackData parses callback data format: [prefix]userID:msgID
-// prefix can be: ?, +, !, or two-char report prefixes (R+, R-, R?, R!, RX)
-func parseCallbackData(data string) (userID int64, msgID int, err error) {
-	if len(data) < 3 {
-		return 0, 0, fmt.Errorf("unexpected callback data, too short %q", data)
-	}
+type callbackTarget struct {
+	ChatID int64
+	UserID int64
+	MsgID  int
+}
 
-	// remove prefix if present from the parsed data
-	// check for two-char report prefixes first (R+, R-, R?, R!, RX)
-	if len(data) >= 3 && data[:1] == "R" {
-		// two-char report prefix
+// parseCallbackTarget parses new [prefix]chatID:userID:msgID and legacy
+// [prefix]userID:msgID payloads. Legacy payloads use fallbackChatID.
+func parseCallbackTarget(data string, fallbackChatID int64) (callbackTarget, error) {
+	if len(data) < 3 {
+		return callbackTarget{}, fmt.Errorf("invalid callback data, too short %q", data)
+	}
+	if data[:1] == "R" {
 		data = data[2:]
-	} else if data[:1] == "?" || data[:1] == "+" || data[:1] == "!" {
-		// single-char prefix
+	} else if strings.ContainsRune("?+!", rune(data[0])) {
 		data = data[1:]
 	}
-
 	parts := strings.Split(data, ":")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("unexpected callback data, should have both ids %q", data)
+	if len(parts) == 1 {
+		userID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			return callbackTarget{}, fmt.Errorf("invalid legacy callback user id: %w", err)
+		}
+		return callbackTarget{ChatID: fallbackChatID, UserID: userID}, nil
 	}
-	if userID, err = strconv.ParseInt(parts[0], 10, 64); err != nil {
-		return 0, 0, fmt.Errorf("failed to parse userID %q: %w", parts[0], err)
+	if len(parts) != 2 && len(parts) != 3 {
+		return callbackTarget{}, fmt.Errorf("unexpected callback data %q", data)
 	}
-	if msgID, err = strconv.Atoi(parts[1]); err != nil {
-		return 0, 0, fmt.Errorf("failed to parse msgID %q: %w", parts[1], err)
+	chatID := fallbackChatID
+	offset := 0
+	if len(parts) == 3 {
+		var err error
+		chatID, err = strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			return callbackTarget{}, fmt.Errorf("failed to parse chatID %q: %w", parts[0], err)
+		}
+		offset = 1
 	}
+	userID, err := strconv.ParseInt(parts[offset], 10, 64)
+	if err != nil {
+		return callbackTarget{}, fmt.Errorf("failed to parse userID %q: %w", parts[offset], err)
+	}
+	msgID, err := strconv.Atoi(parts[offset+1])
+	if err != nil {
+		return callbackTarget{}, fmt.Errorf("failed to parse msgID %q: %w", parts[offset+1], err)
+	}
+	return callbackTarget{ChatID: chatID, UserID: userID, MsgID: msgID}, nil
+}
 
-	return userID, msgID, nil
+func formatCallbackData(prefix string, chatID, userID int64, msgID int) string {
+	return fmt.Sprintf("%s%d:%d:%d", prefix, chatID, userID, msgID)
+}
+
+// parseCallbackData parses callback data format: [prefix]userID:msgID.
+// prefix can be: ?, +, !, or two-char report prefixes (R+, R-, R?, R!, RX)
+func parseCallbackData(data string) (userID int64, msgID int, err error) {
+	if !strings.Contains(data, ":") {
+		return 0, 0, fmt.Errorf("unexpected callback data %q", data)
+	}
+	target, err := parseCallbackTarget(data, 0)
+	return target.UserID, target.MsgID, err
 }
 
 // channelIDFromCallback returns the channel ID if the parsed callback ID is negative (channel),

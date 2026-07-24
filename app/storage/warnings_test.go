@@ -128,6 +128,53 @@ func (s *StorageTestSuite) TestWarnings_AddMultiGIDIsolation() {
 	})
 }
 
+func (s *StorageTestSuite) TestWarnings_ChatIsolation() {
+	ctx := context.Background()
+	db, err := engine.NewSqlite(":memory:", "warning-chat-isolation")
+	s.Require().NoError(err)
+	defer db.Close()
+	warnings, err := NewWarnings(ctx, db)
+	s.Require().NoError(err)
+
+	s.Require().NoError(warnings.AddInChat(ctx, 100, 42, "user"))
+	s.Require().NoError(warnings.AddInChat(ctx, 100, 42, "user"))
+	s.Require().NoError(warnings.AddInChat(ctx, 200, 42, "user"))
+
+	count, err := warnings.CountWithinChat(ctx, 100, 42, time.Hour)
+	s.Require().NoError(err)
+	s.Equal(2, count)
+	count, err = warnings.CountWithinChat(ctx, 200, 42, time.Hour)
+	s.Require().NoError(err)
+	s.Equal(1, count)
+}
+
+func (s *StorageTestSuite) TestWarnings_MigrateChatScope() {
+	ctx := context.Background()
+	for _, dbt := range s.getTestDB() {
+		db := dbt.DB
+		s.Run(fmt.Sprintf("with %s", db.Type()), func() {
+			db.Exec("DROP TABLE IF EXISTS warnings")
+			defer db.Exec("DROP TABLE IF EXISTS warnings")
+			_, err := db.Exec(`CREATE TABLE warnings (
+				gid TEXT NOT NULL DEFAULT '', user_id BIGINT NOT NULL, user_name TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
+			s.Require().NoError(err)
+			_, err = db.Exec(db.Adopt("INSERT INTO warnings (gid, user_id, user_name) VALUES (?, ?, ?)"), db.GID(), 42, "legacy")
+			s.Require().NoError(err)
+
+			warnings, err := NewWarnings(ctx, db)
+			s.Require().NoError(err)
+			var chatID int64
+			err = db.Get(&chatID, db.Adopt("SELECT chat_id FROM warnings WHERE gid = ? AND user_id = ?"), db.GID(), 42)
+			s.Require().NoError(err)
+			s.Zero(chatID, "legacy warnings use the legacy scope")
+			count, err := warnings.CountWithinChat(ctx, 100, 42, time.Hour)
+			s.Require().NoError(err)
+			s.Zero(count, "legacy warnings must not affect protected-chat counters")
+		})
+	}
+}
+
 func (s *StorageTestSuite) TestWarnings_CountWithin() {
 	ctx := context.Background()
 	for _, dbt := range s.getTestDB() {

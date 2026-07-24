@@ -1215,6 +1215,25 @@ func Test_activateServerEmptyAuthGeneratesBcryptHash(t *testing.T) {
 		"AuthHash should be a bcrypt hash (got %q)", settings.Server.AuthHash)
 }
 
+func TestTelegramGroupsOption(t *testing.T) {
+	t.Run("repeated flag", func(t *testing.T) {
+		var opts options
+		parser := flags.NewParser(&opts, flags.PrintErrors|flags.PassDoubleDash|flags.HelpFlag)
+		_, err := parser.ParseArgs([]string{"--telegram.group=one", "--telegram.group=two"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"one", "two"}, opts.Telegram.Group)
+	})
+
+	t.Run("comma delimited environment", func(t *testing.T) {
+		t.Setenv("TELEGRAM_GROUP", "one,two")
+		var opts options
+		parser := flags.NewParser(&opts, flags.PrintErrors|flags.PassDoubleDash|flags.HelpFlag)
+		_, err := parser.ParseArgs(nil)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"one", "two"}, opts.Telegram.Group)
+	})
+}
+
 func TestREADMEAllOptionsMatchesHelp(t *testing.T) {
 	// guards drift between CLI flags/env vars and the "All Application Options"
 	// block in README.md. parses options struct via go-flags to enumerate every

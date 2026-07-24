@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/umputun/tg-spam/app/storage/engine"
 )
 
 func (s *StorageTestSuite) TestReports_NewReports() {
@@ -204,6 +206,27 @@ func (s *StorageTestSuite) TestReports_GetReporterCountSince() {
 			})
 		})
 	}
+}
+
+func (s *StorageTestSuite) TestReports_ChatRateIsolation() {
+	ctx := context.Background()
+	db, err := engine.NewSqlite(":memory:", "report-chat-isolation")
+	s.Require().NoError(err)
+	defer db.Close()
+	reports, err := NewReports(ctx, db)
+	s.Require().NoError(err)
+
+	for msgID, chatID := range []int64{100, 100, 200} {
+		s.Require().NoError(reports.Add(ctx, Report{
+			MsgID: msgID + 1, ChatID: chatID, ReporterUserID: 42, ReportedUserID: 99, MsgText: "spam",
+		}))
+	}
+	count, err := reports.GetReporterCountSinceChat(ctx, 100, 42, time.Now().Add(-time.Hour))
+	s.Require().NoError(err)
+	s.Equal(2, count)
+	count, err = reports.GetReporterCountSinceChat(ctx, 200, 42, time.Now().Add(-time.Hour))
+	s.Require().NoError(err)
+	s.Equal(1, count)
 }
 
 func (s *StorageTestSuite) TestReports_UpdateAdminMsgID() {

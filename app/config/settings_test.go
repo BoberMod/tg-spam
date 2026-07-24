@@ -16,7 +16,7 @@ func TestSettings_JSON(t *testing.T) {
 	s := New()
 	s.InstanceID = "test-instance"
 	s.SimilarityThreshold = 0.75
-	s.Telegram.Group = "test-group"
+	s.Telegram.Group = ChatGroups{"test-group"}
 	s.Telegram.Timeout = 30 * time.Second
 	s.Server.Enabled = true
 	s.Server.ListenAddr = ":9000"
@@ -51,7 +51,7 @@ func TestSettings_JSON(t *testing.T) {
 
 	// check that fields match
 	assert.Equal(t, "test-instance", s2.InstanceID)
-	assert.Equal(t, "test-group", s2.Telegram.Group)
+	assert.Equal(t, ChatGroups{"test-group"}, s2.Telegram.Group)
 	assert.Equal(t, 30*time.Second, s2.Telegram.Timeout)
 	assert.Equal(t, ":9000", s2.Server.ListenAddr)
 	assert.Equal(t, "test spam message", s2.Message.Spam)
@@ -64,6 +64,56 @@ func TestSettings_JSON(t *testing.T) {
 	assert.Equal(t, "secret-hash", s2.Server.AuthHash)
 	assert.False(t, s2.Transient.ConfigDB)
 	assert.False(t, s2.Transient.Dbg)
+}
+
+func TestChatGroupsCompatibility(t *testing.T) {
+	t.Run("legacy JSON scalar", func(t *testing.T) {
+		var settings Settings
+		require.NoError(t, json.Unmarshal([]byte(`{"telegram":{"group":"legacy"}}`), &settings))
+		assert.Equal(t, ChatGroups{"legacy"}, settings.Telegram.Group)
+	})
+
+	t.Run("JSON array round trip", func(t *testing.T) {
+		settings := Settings{Telegram: TelegramSettings{Group: ChatGroups{"one", "two"}}}
+		data, err := json.Marshal(settings)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"group":["one","two"]`)
+
+		var decoded Settings
+		require.NoError(t, json.Unmarshal(data, &decoded))
+		assert.Equal(t, settings.Telegram.Group, decoded.Telegram.Group)
+	})
+
+	t.Run("legacy YAML scalar", func(t *testing.T) {
+		var settings Settings
+		require.NoError(t, yaml.Unmarshal([]byte("telegram:\n  group: legacy\n"), &settings))
+		assert.Equal(t, ChatGroups{"legacy"}, settings.Telegram.Group)
+	})
+
+	t.Run("YAML array round trip", func(t *testing.T) {
+		settings := Settings{Telegram: TelegramSettings{Group: ChatGroups{"one", "two"}}}
+		data, err := yaml.Marshal(settings)
+		require.NoError(t, err)
+		var decoded Settings
+		require.NoError(t, yaml.Unmarshal(data, &decoded))
+		assert.Equal(t, settings.Telegram.Group, decoded.Telegram.Group)
+	})
+
+	t.Run("normalization", func(t *testing.T) {
+		groups := ChatGroups{" one ", "", "two", "one", " two "}.Normalize()
+		assert.Equal(t, ChatGroups{"one", "two"}, groups)
+	})
+
+	t.Run("empty values serialize as arrays", func(t *testing.T) {
+		settings := Settings{Telegram: TelegramSettings{}}
+		jsonData, err := json.Marshal(settings)
+		require.NoError(t, err)
+		assert.Contains(t, string(jsonData), `"group":[]`)
+
+		yamlData, err := yaml.Marshal(settings)
+		require.NoError(t, err)
+		assert.Contains(t, string(yamlData), "group: []")
+	})
 }
 
 func TestSettings_IsOpenAIEnabled(t *testing.T) {

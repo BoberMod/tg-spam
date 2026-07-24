@@ -2547,6 +2547,35 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 	})
 }
 
+func TestAdmin_MsgHandlerAmbiguousMultiChatFallback(t *testing.T) {
+	var sent []string
+	api := &mocks.TbAPIMock{SendFunc: func(c tbapi.Chattable) (tbapi.Message, error) {
+		msg := c.(tbapi.MessageConfig)
+		sent = append(sent, msg.Text)
+		return tbapi.Message{}, nil
+	}}
+	botMock := &mocks.BotMock{UpdateSpamFunc: func(string) error { return nil }}
+	adm := &admin{
+		tbAPI: api, bot: botMock, locator: &mocks.LocatorMock{
+			MessageFunc: func(context.Context, string) (storage.MsgMeta, bool) { return storage.MsgMeta{}, false },
+		},
+		primChatID: 123, adminChatID: 456, ambiguousForward: true,
+	}
+	msg := &tbapi.Message{
+		Chat: tbapi.Chat{ID: 456}, From: &tbapi.User{ID: 1, UserName: "admin"}, Text: "missed spam",
+		ForwardOrigin: &tbapi.MessageOrigin{Type: tbapi.MessageOriginUser,
+			SenderUser: &tbapi.User{ID: 555, UserName: "spammer"}},
+	}
+
+	require.NoError(t, adm.MsgHandler(tbapi.Update{Message: msg}))
+	require.Len(t, botMock.UpdateSpamCalls(), 1)
+	assert.Empty(t, botMock.RemoveApprovedUserCalls())
+	assert.Empty(t, botMock.OnMessageCalls())
+	assert.Empty(t, api.RequestCalls())
+	require.Len(t, sent, 1)
+	assert.Contains(t, sent[0], "ambiguous source chat")
+}
+
 func TestAdmin_DirectSpamReport_ImageOnly(t *testing.T) {
 	mockAPI := &mocks.TbAPIMock{
 		SendFunc: func(c tbapi.Chattable) (tbapi.Message, error) {

@@ -151,6 +151,7 @@ func (c *Checker) createMetaChecker(name string, checker *lua.LFunction) Check {
 
 		// add metadata
 		metaTable := c.vm.NewTable()
+		metaTable.RawSetString("chat_id", lua.LNumber(req.Meta.ChatID))
 		metaTable.RawSetString("images", lua.LNumber(req.Meta.Images))
 		metaTable.RawSetString("links", lua.LNumber(req.Meta.Links))
 		metaTable.RawSetString("mentions", lua.LNumber(req.Meta.Mentions))

@@ -18,7 +18,7 @@ func optToSettings(opts options) *config.Settings {
 		InstanceID: opts.InstanceID,
 
 		Telegram: config.TelegramSettings{
-			Group:        opts.Telegram.Group,
+			Group:        config.ChatGroups(opts.Telegram.Group).Normalize(),
 			IdleDuration: opts.Telegram.IdleDuration,
 			Timeout:      opts.Telegram.Timeout,
 		},

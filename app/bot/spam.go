@@ -51,7 +51,9 @@ type Detector interface {
 	RemoveApprovedUser(id string) error
 	ApprovedUsers() (res []approved.UserInfo)
 	IsApprovedUser(userID string) bool
+	IsApprovedUserInChat(chatID int64, userID string) bool
 	RecordReaction(userID int64) spamcheck.Response
+	RecordReactionInChat(chatID, userID int64) spamcheck.Response
 	GetLuaPluginNames() []string // Returns the list of available Lua plugin names
 }
 
@@ -107,6 +109,7 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 	spamReq := spamcheck.Request{Msg: msgText, Quote: quoteText, CheckOnly: checkOnly,
 		UserID: strconv.FormatInt(checkUserID, 10), UserName: checkUserName,
 		FirstName: firstName, LastName: lastName, IsPremium: isPremium}
+	spamReq.Meta.ChatID = msg.ChatID
 	if msg.Image != nil {
 		spamReq.Meta.Images = 1
 	}
@@ -199,9 +202,14 @@ func (s *SpamFilter) UpdateHam(msg string) error {
 	return nil
 }
 
-// IsApprovedUser checks if user is in the list of approved users
+// IsApprovedUser checks if user is in the global approval scope.
 func (s *SpamFilter) IsApprovedUser(userID int64) bool {
 	return s.Detector.IsApprovedUser(fmt.Sprintf("%d", userID))
+}
+
+// IsApprovedUserInChat checks global and chat-local approval scopes.
+func (s *SpamFilter) IsApprovedUserInChat(chatID, userID int64) bool {
+	return s.Detector.IsApprovedUserInChat(chatID, fmt.Sprintf("%d", userID))
 }
 
 // OnReaction records one net-new reaction from a user and returns a ban response if the threshold is exceeded.
@@ -211,7 +219,18 @@ func (s *SpamFilter) OnReaction(userID int64, userName string) Response {
 	if s.IsApprovedUser(userID) {
 		return Response{}
 	}
-	resp := s.RecordReaction(userID)
+	return s.reactionResponse(userID, userName, s.RecordReaction(userID))
+}
+
+// OnReactionInChat records one net-new reaction in a chat-local counter.
+func (s *SpamFilter) OnReactionInChat(chatID, userID int64, userName string) Response {
+	if s.IsApprovedUserInChat(chatID, userID) {
+		return Response{}
+	}
+	return s.reactionResponse(userID, userName, s.RecordReactionInChat(chatID, userID))
+}
+
+func (s *SpamFilter) reactionResponse(userID int64, userName string, resp spamcheck.Response) Response {
 	if resp.Spam {
 		log.Printf("[INFO] user %s (%d) detected as reaction spammer", userName, userID)
 		return Response{

@@ -1,6 +1,6 @@
 # tg-spam
 
-TG-Spam is an effective, self-hosted anti-spam bot specifically crafted for Telegram groups. Setting it up is straightforward as a Docker container, needing just a Telegram token and a group name or ID for the user to get started. Once activated, TG-Spam oversees messages, leveraging an advanced spam detection methods to pinpoint and eliminate spam content.
+TG-Spam is an effective, self-hosted anti-spam bot specifically crafted for Telegram groups. Setting it up is straightforward as a Docker container, needing just a Telegram token and one or more group names or IDs to get started. Once activated, TG-Spam oversees messages, leveraging advanced spam detection methods to pinpoint and eliminate spam content.
 
 <div align="center">
   <img class="logo" src="https://github.com/umputun/tg-spam/raw/master/site/tg-spam-bg.png" width="400px" alt="TG-Spam | Spam Hunter"/>
@@ -47,7 +47,7 @@ All the configuration is done via environment variables or command line argument
 There are some mandatory parameters what has to be set:
 
 - `--telegram.token=, [$TELEGRAM_TOKEN]` - telegram bot token. See below how to get it.
-- `--telegram.group=, [$TELEGRAM_GROUP]` - group name/id. This can be a group name (for public groups it will look like `mygroup`) or group id (for private groups it will look like `-123456789`). To get the group id you can use [this bot](https://t.me/myidbot) or others like it.
+- `--telegram.group=, [$TELEGRAM_GROUP]` - protected group name/id; repeat the flag for multiple groups. `TELEGRAM_GROUP` accepts a comma-separated list. A value can be a public group name such as `mygroup` or a private group ID such as `-123456789`. To get a group ID you can use [this bot](https://t.me/myidbot) or others like it. One bot process shares learning data across all protected groups while keeping moderation actions and behavioral counters scoped to the source group.
 
 As long as theses two parameters are set, the bot will work. Remember to add the bot to the group as an admin, otherwise it will not be able to delete messages and ban users.
 
@@ -621,7 +621,7 @@ delete:
 
 telegram:
       --telegram.token=                 telegram bot token [$TELEGRAM_TOKEN]
-      --telegram.group=                 group name/id [$TELEGRAM_GROUP]
+      --telegram.group=                 group name/id, repeatable [$TELEGRAM_GROUP]
       --telegram.timeout=               http client timeout for telegram (default: 30s) [$TELEGRAM_TIMEOUT]
       --telegram.idle=                  idle duration (default: 30s) [$TELEGRAM_IDLE]
 
@@ -741,7 +741,7 @@ Available commands:
 
 ### Application Options in details
 
-- `super` defines the list of privileged users, can be repeated multiple times or provide as a comma-separated list in the environment. Those users are immune to spam detection and can also unban other users. All the admins of the group are privileged by default. Additionally, anonymous admin posts (when admins post "as the group" itself) are automatically excluded from spam checks. If the group is linked to a channel (i.e. it is a discussion group), the linked channel is also treated as a superuser and its messages skip spam checking. This is resolved automatically at startup and requires no extra configuration.
+- `super` defines global privileged users, can be repeated multiple times or provided as a comma-separated list in the environment. Those users are immune to spam detection and can moderate every protected group. Telegram administrators discovered at startup are privileged only in their own group. Anonymous admin posts (when admins post "as the group" itself) are automatically excluded from spam checks. If a group is linked to a channel (i.e. it is a discussion group), that linked channel is privileged only in its discussion group and its messages skip spam checking.
 - `no-spam-reply` - if set to `true`, the bot will not reply to spam messages. By default, the bot will reply to spam messages with the text `this is spam` and `this is spam (dry mode)` for dry mode. In non-dry mode, the bot will delete the spam message and ban the user permanently with no reply to the group.
 - `history-duration` defines how long to keep the message in the internal cache. If the message is older than this value, it will be removed from the cache. The default value is 24 hours. The cache is used to match the original message with the forwarded one. See [Updating spam and ham samples dynamically](#updating-spam-and-ham-samples-dynamically) section for more details.
 - `history-min-size` defines the minimal number of messages to keep in the internal cache. If the number of messages is greater than this value, and the `history-duration` exceeded, the oldest messages will be removed from the cache.
@@ -919,7 +919,7 @@ services:
     environment:
       - TZ=America/Chicago
       - TELEGRAM_TOKEN=ххххх
-      - TELEGRAM_GROUP=example_chat # public group name to monitor and protect
+      - TELEGRAM_GROUP=example_chat,another_chat # public group names or IDs to monitor and protect
       - ADMIN_GROUP=-403767890 # private group id for admin spam-reports
       - LOGGER_ENABLED=true
       - LOGGER_FILE=/srv/log/tg-spam.log
@@ -957,9 +957,11 @@ It also has an example of [docker-compose.yml](https://github.com/umputun/tg-spa
 
 ## Running tg-spam for multiple groups
 
-It is not possible to run the bot for multiple groups, as the bot is designed to work with a single group only. However, it is possible to run multiple instances of the bot with different tokens and different groups. Note: it has to have a token per bot, because TG doesn't allow using the same token for multiple bots at the same time, and such a reuse attempt will prevent the bot from working properly.
+One bot token and process can protect multiple groups. Repeat `--telegram.group=<name-or-id>` for each group, or set `TELEGRAM_GROUP` to a comma-separated list. The bot resolves every configured group at startup, rejects unresolved groups and an admin chat that is also protected, and ignores updates from unconfigured chats.
 
-At the same time, multiple instances of the bot can share the same set of samples and dynamic data files. To do so, user should mount the same directory with samples and dynamic data files to all the instances of the bot.
+Spam samples, dictionaries, detector rules, LLM history, and manual approvals are shared. Moderation actions and behavioral state such as duplicate detection, reactions, warnings, report limits, message cleanup, and automatic approvals stay scoped to the source group. Explicit `--super` users can moderate every protected group; Telegram administrators and linked channels receive privileges only in their own group. A single `--admin-group` receives notices from all protected groups, with each notice identifying its source group.
+
+Separate bot instances can still share samples and dynamic data files by mounting the same directory. Each concurrently running instance needs a different Telegram bot token.
 
 > **Upgrade note for shared PostgreSQL databases:** the message locator tables (`messages`, `spam`) are keyed by `(instance-id, ...)` and are migrated to composite primary keys on first startup of an upgraded instance. While a shared database has instances on mixed versions, older binaries can fail their locator upserts against the migrated schema (the old single-column `ON CONFLICT` target no longer exists). Upgrade all instances sharing one database together.
 

@@ -24,6 +24,25 @@ import (
 	"github.com/umputun/tg-spam/lib/tgspam/mocks"
 )
 
+type scopedMessageCounter struct {
+	counts map[int64]int
+	ids    map[int64][]int
+}
+
+func (s *scopedMessageCounter) CountUserMessages(context.Context, string) (int, error) { return 0, nil }
+
+func (s *scopedMessageCounter) UserMessageIDs(context.Context, string, int) ([]int, error) {
+	return nil, nil
+}
+
+func (s *scopedMessageCounter) CountUserMessagesInChat(_ context.Context, chatID int64, _ string) (int, error) {
+	return s.counts[chatID], nil
+}
+
+func (s *scopedMessageCounter) UserMessageIDsInChat(_ context.Context, chatID int64, _ string, _ int) ([]int, error) {
+	return s.ids[chatID], nil
+}
+
 func TestDetector_CheckWithShort(t *testing.T) {
 	d := NewDetector(Config{MaxAllowedEmoji: 1, MinMsgLen: 150})
 	lr, err := d.LoadStopWords(bytes.NewBufferString("в личку\nвсем привет"))
@@ -3646,6 +3665,24 @@ func TestDetectorRecordReaction(t *testing.T) {
 	})
 }
 
+func TestDetector_ApprovalScopes(t *testing.T) {
+	d := NewDetector(Config{FirstMessageOnly: true, FirstMessagesCount: 1, MinMsgLen: 1, MaxAllowedEmoji: -1})
+	spam, _ := d.Check(spamcheck.Request{
+		Msg: "legitimate message", UserID: "42", UserName: "user", Meta: spamcheck.MetaData{ChatID: 100},
+	})
+	require.False(t, spam)
+	assert.True(t, d.IsApprovedUserInChat(100, "42"))
+	assert.False(t, d.IsApprovedUserInChat(200, "42"), "automatic approval must stay in its source chat")
+
+	require.NoError(t, d.AddApprovedUser(approved.UserInfo{UserID: "42", UserName: "user"}))
+	assert.True(t, d.IsApprovedUserInChat(100, "42"))
+	assert.True(t, d.IsApprovedUserInChat(200, "42"), "manual approval must apply to all chats")
+
+	require.NoError(t, d.RemoveApprovedUser("42"))
+	assert.False(t, d.IsApprovedUserInChat(100, "42"))
+	assert.False(t, d.IsApprovedUserInChat(200, "42"))
+}
+
 // helper function to find response by name
 func findResponseByName(responses []spamcheck.Response, name string) *spamcheck.Response {
 	for _, r := range responses {
@@ -3663,7 +3700,9 @@ func TestDetector_MaxShortMsgCount(t *testing.T) {
 	newCounter := func(count int, ids []int) *mocks.MessageCounterMock {
 		return &mocks.MessageCounterMock{
 			CountUserMessagesFunc: func(ctx context.Context, userID string) (int, error) { return count, nil },
-			UserMessageIDsFunc:    func(ctx context.Context, userID string, limit int) ([]int, error) { return ids, nil },
+			UserMessageIDsFunc: func(ctx context.Context, userID string, limit int) ([]int, error) {
+				return ids, nil
+			},
 		}
 	}
 
@@ -3705,6 +3744,24 @@ func TestDetector_MaxShortMsgCount(t *testing.T) {
 		assert.True(t, resp.Spam)
 		assert.Equal(t, "3 messages without approval (threshold 3)", resp.Details)
 		assert.Equal(t, []int{30, 31, 32}, resp.ExtraDeleteIDs)
+	})
+
+	t.Run("counts and cleanup IDs are isolated by chat", func(t *testing.T) {
+		mc := &scopedMessageCounter{
+			counts: map[int64]int{100: 3, 200: 1},
+			ids:    map[int64][]int{100: {10, 11, 12}, 200: {20}},
+		}
+		d := NewDetector(Config{
+			MaxShortMsgCount: 3, FirstMessagesCount: 2, FirstMessageOnly: true, MinMsgLen: 50, MaxAllowedEmoji: -1,
+		})
+		d.WithMessageCounter(mc)
+		spam, _ := d.Check(spamcheck.Request{Msg: shortMsg, UserID: "123", Meta: spamcheck.MetaData{ChatID: 200}})
+		assert.False(t, spam)
+		spam, checks := d.Check(spamcheck.Request{Msg: shortMsg, UserID: "123", Meta: spamcheck.MetaData{ChatID: 100}})
+		assert.True(t, spam)
+		response := findResponseByName(checks, "short-msg-flood")
+		require.NotNil(t, response)
+		assert.Equal(t, []int{10, 11, 12}, response.ExtraDeleteIDs)
 	})
 
 	t.Run("triggers on Nth message in pipeline", func(t *testing.T) {

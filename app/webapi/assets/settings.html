@@ -28,7 +28,7 @@
                                     <tr><th style="width: 30%">Version</th><td>{{.Version}}</td></tr>
                                     <tr><th>Uptime</th><td>{{.System.Uptime}}</td></tr>
                                     <tr><th>Instance ID</th><td>{{.InstanceID}}</td></tr>
-                                    <tr><th>Primary Group</th><td>{{.Telegram.Group}}</td></tr>
+                                    <tr><th>Protected Groups</th><td>{{range .Telegram.Group}}{{.}}<br>{{else}}none{{end}}</td></tr>
                                     <tr><th>Admin Group</th><td>{{.Admin.AdminGroup}}</td></tr>
                                 </tbody>
                             </table>
@@ -641,6 +641,11 @@
             {{if .ConfigDBMode}}
             <div class="row mb-3">
                 <div class="col-md-6 mb-3">
+                    <label for="protectedGroups" class="form-label">Protected Groups</label>
+                    <textarea class="form-control" id="protectedGroups" name="protectedGroups" rows="3">{{range $i, $group := .Telegram.Group}}{{if $i}},{{end}}{{$group}}{{end}}</textarea>
+                    <div class="form-text">Comma- or newline-separated Telegram group names or IDs</div>
+                </div>
+                <div class="col-md-6 mb-3">
                     <label for="superUsers" class="form-label">Super Users</label>
                     <textarea class="form-control" id="superUsers" name="superUsers" rows="3">{{range $i, $user := .Admin.SuperUsers}}{{if $i}},{{end}}{{$user}}{{end}}</textarea>
                     <div class="form-text">Comma-separated list of Telegram user IDs with special privileges</div>
@@ -689,7 +694,8 @@
                         <tr><th colspan="2">Bot Behavior Settings</th></tr>
                     </thead>
                     <tbody>
-                        <tr><th style="width: 30%">Super Users</th><td>{{range .Admin.SuperUsers}}{{.}}<br>{{end}}</td></tr>
+                        <tr><th style="width: 30%">Protected Groups</th><td>{{range .Telegram.Group}}{{.}}<br>{{else}}none{{end}}</td></tr>
+                        <tr><th>Super Users</th><td>{{range .Admin.SuperUsers}}{{.}}<br>{{end}}</td></tr>
                         <tr><th>Disable Admin Spam Forward</th><td>{{.Admin.DisableAdminSpamForward}}</td></tr>
                         <tr><th>No Spam Reply</th><td>{{.NoSpamReply}}</td></tr>
                         <tr><th>Startup Message Enabled</th><td>{{.IsStartupMessageEnabled}}</td></tr>
