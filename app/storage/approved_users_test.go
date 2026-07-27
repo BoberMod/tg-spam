@@ -223,6 +223,47 @@ func (s *StorageTestSuite) TestApprovedUsers_MigrateGlobalScope() {
 	}
 }
 
+func (s *StorageTestSuite) TestApprovedUsers_MigrateDuplicateLegacyRows() {
+	ctx := context.Background()
+	for _, dbt := range s.getTestDB() {
+		db := dbt.DB
+		s.Run(fmt.Sprintf("with %s", db.Type()), func() {
+			db.Exec("DROP TABLE IF EXISTS approved_users")
+			defer db.Exec("DROP TABLE IF EXISTS approved_users")
+			_, err := db.Exec(`CREATE TABLE approved_users (
+				uid TEXT, gid TEXT DEFAULT '', name TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
+			s.Require().NoError(err)
+
+			newer := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+			older := newer.Add(-time.Hour)
+			insert := db.Adopt("INSERT INTO approved_users (uid, gid, name, timestamp) VALUES (?, ?, ?, ?)")
+			_, err = db.Exec(insert, "42", db.GID(), "newer", newer)
+			s.Require().NoError(err)
+			_, err = db.Exec(insert, "42", db.GID(), "older-inserted-last", older)
+			s.Require().NoError(err)
+			_, err = db.Exec(insert, "43", db.GID(), "unrelated", older)
+			s.Require().NoError(err)
+
+			users, err := NewApprovedUsers(ctx, db)
+			s.Require().NoError(err)
+			loaded, err := users.Read(ctx)
+			s.Require().NoError(err)
+			s.Require().Len(loaded, 2)
+			s.Equal("42", loaded[0].UserID)
+			s.Equal("newer", loaded[0].UserName)
+			s.Equal(newer.Unix(), loaded[0].Timestamp.Unix())
+			s.Zero(loaded[0].ChatID)
+			s.Equal("43", loaded[1].UserID)
+
+			s.Require().NoError(users.Write(ctx, approved.UserInfo{UserID: "42", UserName: "updated"}))
+			loaded, err = users.Read(ctx)
+			s.Require().NoError(err)
+			s.Require().Len(loaded, 2, "scoped unique key must replace the existing global approval")
+			s.Equal("updated", loaded[0].UserName)
+		})
+	}
+}
+
 func (s *StorageTestSuite) TestApprovedUsers_Read() {
 	ctx := context.Background()
 	for _, dbt := range s.getTestDB() {

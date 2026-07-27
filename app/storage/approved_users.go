@@ -245,37 +245,59 @@ func (au *ApprovedUsers) migrate(ctx context.Context, tx *sqlx.Tx, gid string) e
 		return err
 	}
 	if au.Type() == engine.Sqlite {
-		stmts := []string{
-			`CREATE TABLE approved_users_new (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, gid TEXT DEFAULT '',
-				name TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, chat_id INTEGER NOT NULL DEFAULT 0,
-				UNIQUE(gid, chat_id, uid))`,
-			`INSERT INTO approved_users_new (uid, gid, name, timestamp, chat_id)
-				SELECT uid, gid, name, timestamp, chat_id FROM approved_users`,
-			"DROP TABLE approved_users",
-			"ALTER TABLE approved_users_new RENAME TO approved_users",
-		}
-		for _, stmt := range stmts {
-			if _, err = tx.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("failed to rebuild approved users: %w", err)
-			}
-		}
-		return nil
+		return au.rebuildApprovedUsersSqlite(ctx, tx)
 	}
+	return au.migrateApprovedUsersPostgres(ctx, tx)
+}
 
+func (au *ApprovedUsers) rebuildApprovedUsersSqlite(ctx context.Context, tx *sqlx.Tx) error {
+	stmts := []string{
+		`CREATE TABLE approved_users_new (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, gid TEXT DEFAULT '',
+			name TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, chat_id INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(gid, chat_id, uid))`,
+		`INSERT OR REPLACE INTO approved_users_new (uid, gid, name, timestamp, chat_id)
+			SELECT uid, COALESCE(gid, ''), name, timestamp, COALESCE(chat_id, 0) FROM approved_users
+			ORDER BY timestamp ASC, rowid ASC`,
+		"DROP TABLE approved_users",
+		"ALTER TABLE approved_users_new RENAME TO approved_users",
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("failed to rebuild approved users: %w", err)
+		}
+	}
+	return nil
+}
+
+func (au *ApprovedUsers) migrateApprovedUsersPostgres(ctx context.Context, tx *sqlx.Tx) error {
 	var constraints []string
 	query := `SELECT tc.constraint_name FROM information_schema.table_constraints tc
 		WHERE tc.table_name='approved_users' AND tc.constraint_type='UNIQUE' AND tc.table_schema=current_schema()`
-	if err = tx.SelectContext(ctx, &constraints, query); err != nil {
+	if err := tx.SelectContext(ctx, &constraints, query); err != nil {
 		return fmt.Errorf("failed to list approved user constraints: %w", err)
 	}
 	for _, constraint := range constraints {
-		if _, err = tx.ExecContext(ctx, "ALTER TABLE approved_users DROP CONSTRAINT "+pq.QuoteIdentifier(constraint)); err != nil {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE approved_users DROP CONSTRAINT "+pq.QuoteIdentifier(constraint)); err != nil {
 			return fmt.Errorf("failed to drop approved user constraint: %w", err)
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `ALTER TABLE approved_users ADD CONSTRAINT approved_users_gid_chat_uid_key
-		UNIQUE (gid, chat_id, uid)`); err != nil {
-		return fmt.Errorf("failed to add approved user scoped constraint: %w", err)
+	stmts := []string{
+		`UPDATE approved_users SET gid = '' WHERE gid IS NULL`,
+		`UPDATE approved_users SET chat_id = 0 WHERE chat_id IS NULL`,
+		`WITH ranked AS (
+			SELECT ctid, ROW_NUMBER() OVER (
+				PARTITION BY gid, chat_id, uid ORDER BY timestamp DESC NULLS LAST, ctid DESC
+			) AS pos FROM approved_users WHERE uid IS NOT NULL
+		) DELETE FROM approved_users a USING ranked r WHERE a.ctid = r.ctid AND r.pos > 1`,
+		`ALTER TABLE approved_users ALTER COLUMN chat_id SET DEFAULT 0`,
+		`ALTER TABLE approved_users ALTER COLUMN chat_id SET NOT NULL`,
+		`ALTER TABLE approved_users ADD CONSTRAINT approved_users_gid_chat_uid_key
+		UNIQUE (gid, chat_id, uid)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("failed to migrate approved user scopes: %w", err)
+		}
 	}
 	return nil
 }
