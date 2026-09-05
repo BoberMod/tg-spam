@@ -111,7 +111,7 @@ To keep the number of calls low and the price manageable, the bot uses the follo
 -  Optionally, the OpenAI check can evaluate the message within the context of previous messages. This is beneficial for identifying spam patterns that may not be evident in the message itself or for avoiding false positives when the context provides additional insights, indicating that the message is not an isolated spam but rather a legitimate part of an ongoing conversation. To activate this feature, set `--openai.history-size=, [$OPENAI_HISTORY_SIZE]` to a positive integer, specifying the number of preceding messages to include. A range of 5-10 should suffice for most scenarios. By default, this feature is disabled.
 -  For models that support "thinking mode" (like Gemini 2.5 Flash), you can control the model's reasoning behavior by setting `--openai.reasoning-effort=` to one of the following values: `none` (disables thinking, default), `low`, `medium`, or `high`. This parameter is particularly useful for controlling how much effort the model puts into its reasoning process. For most spam detection cases, setting this to `none` is recommended for faster responses. TG-Spam also automatically strips all `<thought></thought>` tags from responses, ensuring clean output regardless of the model's reasoning behavior.
 - You can specify additional custom prompts to better detect certain spam patterns by using the `--openai.custom-prompt=[$OPENAI_CUSTOM_PROMPT]` parameter. This parameter can be repeated multiple times to add different spam patterns to check for. For example, to detect messages following the pattern "will perform <action> - $1,234", you can add `--openai.custom-prompt="Check if message follows pattern: 'will perform [action] - $[amount]' which is a common spam format"`. Custom prompts are appended to the base system prompt and help guide the AI in identifying specific spam patterns that might be difficult to detect with other methods.
--  Messages shorter than `--min-msg-len` are typically skipped by most checks because short messages often lack sufficient context to accurately determine if they are spam. However, you can enable OpenAI checks for short messages by setting `--openai.check-short-messages`. This can be useful when dealing with concise spam patterns that OpenAI might be able to detect through its more sophisticated analysis, even with limited text. When this feature is enabled, short messages are always checked by OpenAI regardless of the `--openai.veto` setting, since there are no other spam detection results to veto (most checks are skipped for short messages). **Note**: Enabling this feature may increase API costs, especially in high-volume environments with many short messages.
+-  Messages shorter than `--min-msg-len` are typically skipped by most content checks because they often lack enough context to classify accurately. Enable LLM checks for short messages with `--openai.check-short-messages` or `--gemini.check-short-messages`. A short message reaches an enabled LLM only when no earlier check has flagged it; stop-word, metadata, Lua, and CAS checks run before the length gate. Veto settings do not affect short-message checks: an earlier spam verdict returns before any LLM runs, while an unflagged short message has no verdict to veto. **Note**: Enabling short-message LLM checks may increase API costs, especially in high-volume environments.
 
 
 **Gemini integration**
@@ -172,6 +172,12 @@ By default the image caption threshold equals `--min-msg-len`. Use `--meta.image
 
 This option is disabled by default. If `--meta.video-only` set or `env:META_VIDEO_ONLY` is `true`, the bot will check the message for the presence of any video or video notes. If the message contains videos with text shorter than `--min-msg-len` (default: 50 characters), it will be marked as spam.
 
+**Document only check**
+
+This option is disabled by default. If `--meta.document-only` set or `env:META_DOCUMENT_ONLY` is `true`, the bot will check the message for the presence of any document (file attachment). If the message contains a document with text shorter than `--min-msg-len` (default: 50 characters), it will be marked as spam. A forwarded document is checked the same way, since Telegram delivers the original caption as message text. Note: Telegram also sets the document field for GIFs, so a GIF without a long enough caption is flagged too. Only text the sender wrote counts toward the threshold: quoted and reply-to text is excluded, so replying to a long message does not exempt a caption-less file.
+
+Enabling this check also changes what reaches the rest of the pipeline. A file or GIF posted without a caption used to be dropped on intake; with the check on it is passed through, so it is stored in the message locator and counts toward `--max-short-msg-count` if that is configured. Checks that do not need message text also run against it: stopword matching (which also matches the username and user ID), the username-symbols check, Lua plugins, and CAS. CAS is the only one enabled on a stock installation; the others require configuration. Any of these checks can produce a spam verdict and, in normal mode, a permanent ban. For a caption-less file shorter than `--min-msg-len`, the document check flags it and the detector returns before the LLM path. Neither OpenAI nor Gemini runs, and their veto settings cannot override the verdict, regardless of either provider's `check-short-messages` setting. With the check off, a directly posted caption-less file is still dropped on intake, exactly as before. A forwarded one, or one attached to a reply to a message from another chat, is admitted on its own regardless of this option. That behavior predates this option, which neither adds nor removes it.
+
 **Audio only check**
 
 This option is disabled by default. If `--meta.audio-only` set or `env:META_AUDIO_ONLY` is `true`, the bot will check the message for the presence of any audio files. If the message contains audio files with text shorter than `--min-msg-len` (default: 50 characters), it will be marked as spam.
@@ -229,6 +235,8 @@ Configure with:
 **Short-message flood detection**
 
 This option is disabled by default. When enabled, the bot bans an unapproved user who has accumulated too many short messages without graduating to "approved" status. This catches spammers who probe a channel with innocuous one-word messages ("hi", "hello", "yo") that individually evade content-based checks and the duplicate detector.
+
+Media-only messages (a photo or video with no caption) count as short messages too, since image flooding is the same probing pattern without text. An unapproved user posting several caption-less photos will reach the threshold. A caption-less file or GIF posted directly counts only when `--meta.document-only` is enabled; without it, it is dropped before the counter sees it. A forwarded one, or one attached to a reply to a message from another chat, is admitted regardless of that option and counts either way.
 
 **Important**: this check requires the first-message evaluation path (`--first-messages-count > 0` or `--first-message-only`); `--paranoid` mode is incompatible and rejected at startup. The risk window for naturally terse legitimate users is bounded to the evaluation period; once approved, the check skips for the rest of that user's lifetime.
 
@@ -367,7 +375,7 @@ To allow such a feature, `--admin.group=,  [$ADMIN_GROUP]` must be specified. Th
 
 **admin commands**
 
-* Admins can reply to the spam message with the text `spam` or `/spam` to mark it as spam. This is useful for training purposes as the bot will learn from the spam messages marked by the admin and will be able to detect similar spam in the future.
+* Admins can reply to the spam message with the text `spam` or `/spam` to mark it as spam. This is useful for training purposes as the bot will learn from the spam messages marked by the admin and will be able to detect similar spam in the future. The same `spam` or `/spam` text from a regular user posting under his own account does not mark the message as spam; it is an alias for `report` and behaves exactly like it (see [User Spam Reporting](#user-spam-reporting)).
 
 * Replying to the message with the text `ban` or `/ban` will ban the user who sent the message. This is useful for post-moderation purposes. Essentially this is the same as sending `/spam` but without adding the message to the spam samples file.
 
@@ -399,11 +407,11 @@ All samples are stored in the database, which can be specified using the `--db=,
 
 ### User Spam Reporting
 
-Regular users can report potential spam messages to moderators by replying to a suspicious message with `/report` or `report`. This feature provides a crowdsourced approach to spam detection, complementing automated spam filters.
+Regular users can report potential spam messages to moderators by replying to a suspicious message with `/report`, `report`, `/spam` or `spam`. This feature provides a crowdsourced approach to spam detection, complementing automated spam filters.
 
 To enable user spam reporting, set `--report.enabled` to `true` and configure an admin chat using `--admin.group=`. When enabled:
 
-1. Users reply to suspicious messages with `/report` to flag them for review
+1. Users reply to suspicious messages with `/report` or `/spam` to flag them for review
 2. The bot tracks all reports for each message
 3. When the number of unique reporters reaches the threshold (configurable via `--report.threshold=`), the bot sends a notification to the admin chat and mentions all superusers configured by username
 4. Admins can review the reported message and take action using inline buttons:
@@ -421,7 +429,7 @@ Only superusers configured by username can be included as Telegram `@username` m
 
   Example: `--report.threshold=2 --report.auto-ban-threshold=5` will notify admins after 2 reports but automatically ban after 5 reports.
 
-The reporting system includes rate limiting to prevent abuse. Each user can submit up to `--report.rate-limit=` reports (default: 10) within `--report.rate-period=` (default: 1 hour). The `/report` command message is automatically deleted to keep the chat clean.
+The reporting system includes rate limiting to prevent abuse. Each user can submit up to `--report.rate-limit=` reports (default: 10) within `--report.rate-period=` (default: 1 hour). The report command message is automatically deleted to keep the chat clean.
 
 All reports are stored in the database for audit purposes and can help identify patterns of spam or abuse over time.
 
@@ -457,21 +465,32 @@ To enable Lua plugins:
 4. Optionally, specify which plugins to enable with `--lua-plugins.enabled-plugins=plugin1,plugin2`
 5. Optionally, enable dynamic reloading with `--lua-plugins.dynamic-reload` to automatically reload plugins when they change
 
-Each Lua plugin must define a `check` function that takes a request object and returns a boolean (is it spam) and a string (details):
+Each Lua plugin must define a `check` function that takes a request object and returns a boolean (is it spam), a string (details), and an optional third boolean (approve this message):
 
 ```lua
+local approved_user_ids = {
+    -- Add Telegram user IDs that may approve the current message:
+    -- ["123456789"] = true,
+}
+
 function check(request)
     -- request contains: msg, user_id, user_name, first_name, last_name, is_premium, meta
-    -- meta contains: images, links, mentions, has_video, has_audio, has_forward, has_keyboard, has_giveaway, has_contact, has_external_reply, message_id
-    
-    -- Your custom spam detection logic here
+    -- meta contains: images, links, mentions, has_video, has_audio, has_forward, has_keyboard, has_giveaway, has_contact, has_document, has_external_reply, message_id
+
     if string.match(request.msg, "some pattern") then
         return true, "matched suspicious pattern"
     end
-    
-    return false, "message looks clean"
+
+    local approve = approved_user_ids[request.user_id] == true
+    return false, "message looks clean", approve
 end
 ```
+
+The third return is backward compatible. Missing, `nil`, and boolean `false` mean no approval. Only an exact boolean `true` is accepted. Other types are ignored and logged once per plugin and type. A plugin error never approves a message, and `true` cannot approve a result where the same plugin returned spam.
+
+Approval clears soft spam results from the current `Detector.Check` call. When at least one plugin approves and a soft check reports spam, the detector returns ham, skips LLM checks, and adds one `lua-approve` row naming the approving plugins. Soft checks include duplicate detection, stop words, emoji, meta checks, Lua checks, CAS, multi-language text, abnormal spacing, similarity, and the classifier. Short-message-flood and prohibited-language checks return before Lua plugins run and cannot be cleared this way.
+
+A cleared short message follows the existing short-message rule: it does not enter ham history or count toward user graduation. A cleared normal-length message follows the ordinary ham path and enters the bounded ham history. It also counts toward configured user graduation unless the request is check-only. With the default `--first-messages-count=1`, one cleared normal-length message graduates the sender, so later messages skip content analysis under the existing graduation rules. When LLM history is enabled, that message can be included as context in later LLM checks, including checks for other users.
 
 Several helper functions are provided to Lua scripts:
 - `count_substring(text, substr)` - Counts occurrences of a substring
@@ -644,6 +663,7 @@ meta:
       --meta.links-only                 enable links only check [$META_LINKS_ONLY]
       --meta.mention-only               enable mention only check [$META_MENTION_ONLY]
       --meta.video-only                 enable video only check [$META_VIDEO_ONLY]
+      --meta.document-only              enable document only check [$META_DOCUMENT_ONLY]
       --meta.audio-only                 enable audio only check [$META_AUDIO_ONLY]
       --meta.contact-only               enable contact only check [$META_CONTACT_ONLY]
       --meta.forward                    enable forward check [$META_FORWARD]

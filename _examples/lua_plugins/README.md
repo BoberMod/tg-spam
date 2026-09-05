@@ -4,15 +4,22 @@ This directory contains examples of Lua plugins for tg-spam. These plugins demon
 
 ## How Lua Plugins Work
 
-Lua plugins allow you to create custom spam detection logic without modifying the Go code. Each plugin is a Lua script that defines a `check` function that takes a request object and returns whether the message is spam and details.
+Lua plugins allow you to create custom spam detection logic without modifying the Go code. Each plugin is a Lua script that defines a `check` function that takes a request object and returns whether the message is spam, details, and an optional approval for the current message.
 
 ### Plugin Requirements
 
 - Each plugin must be a `.lua` file
 - Each plugin must define a `check` function
-- The `check` function must return two values:
+- The `check` function must return two values and may return a third:
   - A boolean indicating whether the message is spam (true) or not (false)
   - A string providing details about the check
+  - An optional boolean approving the current message when the spam result is false
+
+Missing, `nil`, and boolean `false` approval values have no effect. Only an exact boolean `true` is accepted. Other types are ignored and logged once per plugin and type. A plugin error never approves a message, and a plugin cannot report spam and approve it in the same result.
+
+An effective approval clears soft spam results from the current `Detector.Check` call and produces one `lua-approve` result row. It can clear duplicate, stop-word, emoji, meta, Lua, CAS, multi-language, abnormal-spacing, similarity, and classifier results. It cannot clear short-message-flood or prohibited-language results because those checks return before Lua plugins run.
+
+Cleared short messages do not enter ham history or count toward user graduation. Cleared normal-length messages follow the ordinary ham path and enter the bounded ham history. They also count toward configured user graduation unless the request is check-only. With the default `--first-messages-count=1`, one cleared normal-length message graduates the sender, so later messages skip content analysis under the existing graduation rules. Cleared messages can become context for later LLM checks when LLM history is enabled.
 
 ### Request Object Structure
 
@@ -34,6 +41,7 @@ Your Lua plugin receives a `request` object with the following fields:
   - `has_keyboard`: Boolean indicating if the message has a keyboard
   - `has_giveaway`: Boolean indicating if the message is a giveaway
   - `has_contact`: Boolean indicating if the message has a shared contact
+  - `has_document`: Boolean indicating if the message has a document (telegram also sets this for GIFs)
   - `message_id`: The Telegram message ID
 
 ### Helper Functions
@@ -98,7 +106,11 @@ Here's a simple example of a custom Lua plugin:
 
 -- Configuration
 local config = {
-    max_exclamations = 3
+    max_exclamations = 3,
+    approved_user_ids = {
+        -- Add Telegram user IDs that may approve the current message:
+        -- ["123456789"] = true,
+    }
 }
 
 -- Main check function
@@ -108,8 +120,9 @@ function check(request)
     if count > config.max_exclamations then
         return true, string.format("too many exclamation marks: %d", count)
     end
-    
-    return false, "normal number of exclamation marks"
+
+    local approve = config.approved_user_ids[request.user_id] == true
+    return false, "normal number of exclamation marks", approve
 end
 ```
 

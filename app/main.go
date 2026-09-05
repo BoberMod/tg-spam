@@ -91,6 +91,7 @@ type options struct {
 		LinksOnly       bool   `long:"links-only" env:"LINKS_ONLY" description:"enable links only check"`
 		MentionOnly     bool   `long:"mention-only" env:"MENTION_ONLY" description:"enable mention only check"`
 		VideosOnly      bool   `long:"video-only" env:"VIDEO_ONLY" description:"enable video only check"`
+		DocumentsOnly   bool   `long:"document-only" env:"DOCUMENT_ONLY" description:"enable document only check"`
 		AudiosOnly      bool   `long:"audio-only" env:"AUDIO_ONLY" description:"enable audio only check"`
 		ContactOnly     bool   `long:"contact-only" env:"CONTACT_ONLY" description:"enable contact only check"`
 		Forward         bool   `long:"forward" env:"FORWARD" description:"enable forward check"`
@@ -357,7 +358,12 @@ func main() {
 		os.Exit(runSaveConfig(appSettings))
 	}
 
-	log.Printf("[DEBUG] settings: %+v", appSettings)
+	// dump a copy with the database credentials masked; the live settings keep the original URL
+	// because that is what gets handed to the driver. masking through setupLog would not work here,
+	// as the secret masker matches literal substrings and the URL may hold a percent-encoded password
+	dumpSettings := *appSettings
+	dumpSettings.Transient.DataBaseURL = engine.RedactConnURL(appSettings.Transient.DataBaseURL)
+	log.Printf("[DEBUG] settings: %+v", &dumpSettings)
 
 	if err := appSettings.Validate(); err != nil {
 		log.Fatalf("[ERROR] %v", err)
@@ -546,6 +552,7 @@ func execute(ctx context.Context, settings *config.Settings, reloadNormalize fun
 		WarnThreshold:           settings.Warn.Threshold,
 		WarnWindow:              settings.Warn.Window,
 		Warnings:                warningsStore,
+		AdmitDocuments:          settings.Meta.DocumentsOnly,
 	}
 
 	if settings.Delete.JoinMessages {
@@ -587,11 +594,11 @@ func makeDB(ctx context.Context, settings *config.Settings) (*engine.SQL, error)
 	if !strings.Contains(dbURL, "/") && !strings.Contains(dbURL, "\\") {
 		dbURL = filepath.Join(settings.Files.DynamicDataPath, dbURL)
 	}
-	log.Printf("[DEBUG] data db: %s", dbURL)
+	log.Printf("[DEBUG] data db: %s", engine.RedactConnURL(dbURL))
 
 	db, err := engine.New(ctx, dbURL, settings.InstanceID)
 	if err != nil {
-		return nil, fmt.Errorf("can't make db %s, %w", settings.Transient.DataBaseURL, err)
+		return nil, fmt.Errorf("can't make db %s, %w", engine.RedactConnURL(settings.Transient.DataBaseURL), err)
 	}
 
 	// backup db on version change for sqlite
@@ -882,6 +889,10 @@ func makeDetector(settings *config.Settings) *tgspam.Detector {
 	if settings.Meta.AudiosOnly {
 		log.Printf("[INFO] audio only check enabled, min text len: %d", settings.MinMsgLen)
 		metaChecks = append(metaChecks, tgspam.AudioCheck(settings.MinMsgLen))
+	}
+	if settings.Meta.DocumentsOnly {
+		log.Printf("[INFO] documents only check enabled, min text len: %d", settings.MinMsgLen)
+		metaChecks = append(metaChecks, tgspam.DocumentsCheck(settings.MinMsgLen))
 	}
 	if settings.Meta.LinksLimit >= 0 {
 		log.Printf("[INFO] links check enabled, limit: %d", settings.Meta.LinksLimit)
