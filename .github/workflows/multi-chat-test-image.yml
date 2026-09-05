@@ -1,16 +1,16 @@
-name: multi-chat fixed test image
+name: multi-chat upstream test image
 
 on:
   push:
     tags:
-      - multi-chat-image-test-fixed
+      - multi-chat-image-test-upstream
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: multi-chat-fixed-test-image
+  group: multi-chat-upstream-test-image
   cancel-in-progress: true
 
 jobs:
@@ -41,11 +41,11 @@ jobs:
           push: true
           build-args: |
             CI=github
-            GITHUB_SHA=${{ github.sha }}
-            GIT_BRANCH=multi-chat-test-fixed
+            GITHUB_SHA=22e5eb3016a0ab46583afa16cd81655554af4ec0
+            GIT_BRANCH=multi-chat-test-upstream
           tags: |
             ghcr.io/bobermod/tg-spam:multi-chat-test
-            ghcr.io/bobermod/tg-spam:multi-chat-test-fixed
-            ghcr.io/bobermod/tg-spam:multi-chat-fd4ba68d
+            ghcr.io/bobermod/tg-spam:multi-chat-upstream
+            ghcr.io/bobermod/tg-spam:multi-chat-22e5eb30
           cache-from: type=gha
           cache-to: type=gha,mode=max
